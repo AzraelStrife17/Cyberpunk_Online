@@ -1,0 +1,13 @@
+{
+  "name": "afterdark-tabletop-companion",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

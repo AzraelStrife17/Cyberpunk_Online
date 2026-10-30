@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0a0c10">
+    <meta name="description" content="A tabletop companion for your Cyberpunk 2020 characters and campaigns.">
+    <title>Afterdark — tabletop companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <a class="brand" href="#" aria-label="Afterdark home">
+          <span class="brand-mark" aria-hidden="true">A<span>.</span></span>
+          <span class="brand-copy"><strong>AFTERDARK</strong><small>TABLETOP COMPANION</small></span>
+        </a>
+        <div class="sidebar-label">YOUR SPACE</div>
+        <nav class="nav-list">
+          <button class="nav-item active" type="button" data-view="dashboard"><span class="nav-icon">⌂</span>Dashboard</button>
+          <button class="nav-item" type="button" data-view="characters"><span class="nav-icon">◈</span>Characters<span class="nav-count" id="character-count">0</span></button>
+          <button class="nav-item" type="button" data-view="campaigns"><span class="nav-icon">▤</span>Campaigns</button>
+          <button class="nav-item" type="button" data-view="sheet"><span class="nav-icon">▣</span>Character sheet</button>
+          <button class="nav-item" type="button" data-view="play"><span class="nav-icon">▷</span>Play view</button>
+        </nav>
+        <div class="account-controls" id="account-controls">
+          <span class="account-name" id="account-name">Local workspace</span>
+          <button class="button button-account" id="account-button" type="button" data-action="open-auth">Sign in</button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumb"><span>AFTERDARK</span><span class="crumb-slash">/</span><span id="crumb-current">OVERVIEW</span></div>
+          <div class="topbar-right">
+            <span class="save-state" id="save-state"><span class="save-dot"></span> SAVED LOCALLY</span>
+            <span class="avatar" aria-label="Your workspace">U</span>
+          </div>
+        </header>
+
+        <div class="page-wrap">
+          <section class="view-panel active" id="view-dashboard" aria-labelledby="page-title">
+            <div class="page-heading">
+              <div><p class="eyebrow">YOUR TABLE, AT A GLANCE</p><h1 id="page-title">Welcome to the <span>afterdark.</span></h1><p class="page-subtitle">A little order in a city that never sleeps.</p></div>
+              <button class="button button-primary" type="button" data-new="character"><span aria-hidden="true">＋</span> New character</button>
+            </div>
+            <div id="dashboard-content"></div>
+          </section>
+
+          <section class="view-panel" id="view-characters" aria-labelledby="characters-title" hidden>
+            <div class="page-heading">
+              <div><p class="eyebrow">THE PEOPLE BEHIND THE LEGENDS</p><h1 id="characters-title">Characters<span class="heading-period">.</span></h1><p class="page-subtitle">Build your crew. Keep their stories close.</p></div>
+              <button class="button button-primary" type="button" data-new="character"><span aria-hidden="true">＋</span> New character</button>
+            </div>
+            <div id="characters-content"></div>
+          </section>
+
+          <section class="view-panel" id="view-sheet" aria-labelledby="sheet-title" hidden>
+            <div class="page-heading">
+              <div><p class="eyebrow">YOUR CHARACTER, IN ONE PLACE</p><h1 id="sheet-title">Character sheet<span class="heading-period">.</span></h1><p class="page-subtitle">Character details and personal equipment in one place.</p></div>
+              <label class="sr-only" for="sheet-character">Choose a character</label>
+              <select id="sheet-character" class="select-control play-character-select"></select>
+            </div>
+            <div id="sheet-content"></div>
+          </section>
+
+          <section class="view-panel" id="view-campaigns" aria-labelledby="campaigns-title" hidden>
+            <div class="page-heading">
+              <div><p class="eyebrow">EVERY STORY NEEDS A FIXER</p><h1 id="campaigns-title">Campaigns<span class="heading-period">.</span></h1><p class="page-subtitle">Keep the jobs, sessions, and loose ends together.</p></div>
+              <div class="heading-actions"><button class="button" type="button" data-action="join-campaign">Join shared campaign</button><button class="button button-primary" type="button" data-new="campaign"><span aria-hidden="true">＋</span> New campaign</button></div>
+            </div>
+            <div id="campaigns-content"></div>
+          </section>
+
+          <section class="view-panel" id="view-play" aria-labelledby="play-title" hidden>
+            <div class="page-heading">
+              <div><p class="eyebrow">AT THE TABLE</p><h1 id="play-title">Play view<span class="heading-period">.</span></h1><p class="page-subtitle">The essentials, without the noise.</p></div>
+              <label class="sr-only" for="play-character">Choose a character</label>
+              <select id="play-character" class="select-control play-character-select"></select>
+            </div>
+            <div id="play-content"></div>
+          </section>
+
+          <section class="view-panel" id="view-board" aria-labelledby="board-title" hidden>
+            <div class="page-heading board-page-heading">
+              <div><p class="eyebrow">SHARED TABLE · 2 METERS PER SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
+              <div class="board-heading-actions"><span class="connection-pill" id="board-connection-status"><span class="connection-dot"></span> OFFLINE</span><button class="button" type="button" data-action="copy-room-code">Copy room code</button></div>
+            </div>
+            <div class="board-connect-bar">
+              <label class="board-name-field"><span class="field-label">YOUR TABLE NAME</span><input id="board-player-name" class="input-control" maxlength="50" autocomplete="nickname" value="Player"></label>
+              <label class="board-name-field gm-key-entry"><span class="field-label">PRIVATE GM KEY (OPTIONAL)</span><input id="board-gm-key" class="input-control" type="password" autocomplete="off"></label>
+              <button class="button button-primary" id="board-connect" type="button">Connect to campaign</button>
+              <span class="board-room-code">ROOM <code id="board-room-code">—</code></span>
+              <span class="gm-key-copy" id="board-gm-controls" hidden><span>GM CONTROLS ENABLED</span><button class="button button-quiet" type="button" data-action="copy-gm-key">Copy private key</button></span>
+              <span class="board-sync-note">Linked character-sheet rolls, GM rolls, health updates, and board moves sync to this room.</span>
+            </div>
+            <div class="board-layout">
+              <aside class="board-palette" aria-label="Board object palette">
+                <div class="board-tabs" role="tablist" aria-label="Board pieces">
+                  <button class="board-tab active" type="button" role="tab" aria-selected="true" data-board-tab="terrain">Terrain</button>
+                  <button class="board-tab" type="button" role="tab" aria-selected="false" data-board-tab="enemies">Enemies</button>
+                  <button class="board-tab" type="button" role="tab" aria-selected="false" data-board-tab="party">Party</button>
+                </div>
+                <div id="board-palette-content"></div>
+              </aside>
+              <div class="board-center">
+                <div class="board-instructions"><span class="live-dot"></span><span>Drag pieces onto the grid or tap “Add”. Move placed pieces to update the shared board.</span><button class="icon-button" type="button" data-action="remove-board-piece" aria-label="Remove selected board piece" title="Remove selected piece">×</button></div>
+                <div class="board-scroll">
+                  <div class="board-canvas">
+                    <div class="ruler-corner" aria-hidden="true">m</div>
+                    <div class="board-ruler-top" id="board-ruler-top" aria-label="Horizontal ruler in meters"></div>
+                    <div class="board-ruler-left" id="board-ruler-left" aria-label="Vertical ruler in meters"></div>
+                    <div class="board-grid" id="board-grid" role="grid" aria-label="Tactical grid, each square represents two meters"></div>
+                  </div>
+                </div>
+              </div>
+              <aside class="board-sidebar" aria-label="Initiative, dice, health, and campaign activity">
+                <div id="board-side-content"></div>
+              </aside>
+            </div>
+          </section>
+
+          <footer class="page-footer">
+            <span>Made for your table.</span>
+            <span class="legal-disclaimer">Afterdark is unofficial content provided under the Homebrew Content Policy of R. Talsorian Games and is not approved or endorsed by RTG. This content references materials that are the property of R. Talsorian Games and its licensees.</span>
+          </footer>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="editor-dialog" class="editor-dialog" aria-labelledby="dialog-title">
+      <div id="dialog-content"></div>
+    </dialog>
+    <dialog id="catalog-dialog" class="catalog-dialog" aria-labelledby="catalog-dialog-title">
+      <div id="catalog-dialog-content"></div>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

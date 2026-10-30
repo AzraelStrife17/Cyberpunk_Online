@@ -1,0 +1,496 @@
+[
+  {
+    "name": "BudgetArms C-13",
+    "category": "Weapon",
+    "weaponType": "Light autopistol",
+    "weaponStats": "Type: P; WA: -1; concealability: P; availability: E; damage/ammo: 1D6 (5mm); shots: 8; ROF: 2; reliability: ST; range: 50m",
+    "cost": "75"
+  },
+  {
+    "name": "Dai Lung Cybermag 15",
+    "category": "Weapon",
+    "weaponType": "Light autopistol",
+    "weaponStats": "Type: P; WA: -1; concealability: P; availability: C; damage/ammo: 1D6+1 (6mm); shots: 10; ROF: 2; reliability: UR; range: 50m",
+    "cost": "50"
+  },
+  {
+    "name": "Federated Arms X-22",
+    "category": "Weapon",
+    "weaponType": "Light autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: P; availability: E; damage/ammo: 1D6+1 (6mm); shots: 10; ROF: 2; reliability: ST; range: 50m",
+    "cost": "150"
+  },
+  {
+    "name": "Militech Arms Avenger",
+    "category": "Weapon",
+    "weaponType": "Medium autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: E; damage/ammo: 2D6+1 (9mm); shots: 10; ROF: 2; reliability: VR; range: 50m",
+    "cost": "250"
+  },
+  {
+    "name": "Dai Lung Streetmaster",
+    "category": "Weapon",
+    "weaponType": "Medium autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: E; damage/ammo: 2D6+3 (10mm); shots: 12; ROF: 2; reliability: UR; range: 50m",
+    "cost": "250"
+  },
+  {
+    "name": "Federated Arms X-9mm",
+    "category": "Weapon",
+    "weaponType": "Medium autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: E; damage/ammo: 2D6+1 (9mm); shots: 12; ROF: 2; reliability: ST; range: 50m",
+    "cost": "300"
+  },
+  {
+    "name": "BudgetArms Auto 3",
+    "category": "Weapon",
+    "weaponType": "Heavy autopistol",
+    "weaponStats": "Type: P; WA: -1; concealability: J; availability: E; damage/ammo: 3D6 (11mm); shots: 8; ROF: 2; reliability: UR; range: 50m",
+    "cost": "350"
+  },
+  {
+    "name": "Sternmeyer Type 35",
+    "category": "Weapon",
+    "weaponType": "Heavy autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: C; damage/ammo: 3D6 (11mm); shots: 8; ROF: 2; reliability: VR; range: 50m",
+    "cost": "400"
+  },
+  {
+    "name": "Armalite 44",
+    "category": "Weapon",
+    "weaponType": "Very heavy autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: E; damage/ammo: 4D6+1 (12mm); shots: 8; ROF: 1; reliability: ST; range: 50m",
+    "cost": "450"
+  },
+  {
+    "name": "Colt AMT Model 2000",
+    "category": "Weapon",
+    "weaponType": "Very heavy autopistol",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: C; damage/ammo: 4D6+1 (12mm); shots: 8; ROF: 1; reliability: VR; range: 50m",
+    "cost": "500"
+  },
+  {
+    "name": "Uzi Miniauto 9",
+    "category": "Weapon",
+    "weaponType": "Light submachinegun",
+    "weaponStats": "Type: SMG; WA: +1; concealability: J; availability: E; damage/ammo: 2D6+1 (9mm); shots: 30; ROF: 35; reliability: VR; range: 150m",
+    "cost": "475"
+  },
+  {
+    "name": "H&K MP-2013",
+    "category": "Weapon",
+    "weaponType": "Light submachinegun",
+    "weaponStats": "Type: SMG; WA: +1; concealability: J; availability: C; damage/ammo: 2D6+3 (10mm); shots: 35; ROF: 32; reliability: ST; range: 150m",
+    "cost": "450"
+  },
+  {
+    "name": "Fed. Arms Tech Assault II",
+    "category": "Weapon",
+    "weaponType": "Light submachinegun",
+    "weaponStats": "Type: SMG; WA: +1; concealability: J; availability: C; damage/ammo: 1D6+1 (6mm); shots: 50; ROF: 25; reliability: ST; range: 150m",
+    "cost": "400"
+  },
+  {
+    "name": "Arasaka Minami 10",
+    "category": "Weapon",
+    "weaponType": "Medium submachinegun",
+    "weaponStats": "Type: SMG; WA: 0; concealability: J; availability: E; damage/ammo: 2D6+3 (10mm); shots: 40; ROF: 20; reliability: VR; range: 200m",
+    "cost": "500"
+  },
+  {
+    "name": "H&K MPK-9",
+    "category": "Weapon",
+    "weaponType": "Medium submachinegun",
+    "weaponStats": "Type: SMG; WA: 0; concealability: J; availability: E; damage/ammo: 2D6+1 (9mm); shots: 35; ROF: 25; reliability: ST; range: 200m",
+    "cost": "500"
+  },
+  {
+    "name": "Sternmeyer SMG 21",
+    "category": "Weapon",
+    "weaponType": "Heavy submachinegun",
+    "weaponStats": "Type: SMG; WA: -1; concealability: L; availability: E; damage/ammo: 3D6 (11mm); shots: 30; ROF: 15; reliability: VR; range: 200m",
+    "cost": "500"
+  },
+  {
+    "name": "H&K MPK-11",
+    "category": "Weapon",
+    "weaponType": "Heavy submachinegun",
+    "weaponStats": "Type: SMG; WA: 0; concealability: L; availability: C; damage/ammo: 3D6+1 (12mm); shots: 30; ROF: 20; reliability: ST; range: 200m",
+    "cost": "700"
+  },
+  {
+    "name": "Ingram MAC 14",
+    "category": "Weapon",
+    "weaponType": "Heavy submachinegun",
+    "weaponStats": "Type: SMG; WA: -2; concealability: L; availability: E; damage/ammo: 4D6+1 (12mm); shots: 20; ROF: 10; reliability: ST; range: 200m",
+    "cost": "650"
+  },
+  {
+    "name": "Militech Ronin Light Assault",
+    "category": "Weapon",
+    "weaponType": "Assault rifle",
+    "weaponStats": "Type: RIF; WA: +1; concealability: N; availability: C; damage/ammo: 5D6 (5.56); shots: 35; ROF: 30; reliability: VR; range: 400m",
+    "cost": "450"
+  },
+  {
+    "name": "AKR-20 Medium Assault",
+    "category": "Weapon",
+    "weaponType": "Assault rifle",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: C; damage/ammo: 5D6 (5.56); shots: 30; ROF: 30; reliability: ST; range: 400m",
+    "cost": "500"
+  },
+  {
+    "name": "FN-RAL Heavy Assault Rifle",
+    "category": "Weapon",
+    "weaponType": "Assault rifle",
+    "weaponStats": "Type: RIF; WA: +1; concealability: N; availability: C; damage/ammo: 6D6+2 (7.62); shots: 30; ROF: 30; reliability: VR; range: 400m",
+    "cost": "600"
+  },
+  {
+    "name": "Kalashnikov A-80 Hvy. Rifle",
+    "category": "Weapon",
+    "weaponType": "Assault rifle",
+    "weaponStats": "Type: RIF; WA: -1; concealability: N; availability: E; damage/ammo: 6D6+2 (7.62); shots: 35; ROF: 25; reliability: ST; range: 400m",
+    "cost": "550"
+  },
+  {
+    "name": "Arasaka Rapid Assault 12",
+    "category": "Weapon",
+    "weaponType": "Shotgun",
+    "weaponStats": "Type: SHT; WA: -1; concealability: N; availability: C; damage/ammo: 4D6 (00); shots: 20; ROF: 10; reliability: ST; range: 50m",
+    "cost": "900"
+  },
+  {
+    "name": "Sternmeyer Stakeout 10",
+    "category": "Weapon",
+    "weaponType": "Shotgun",
+    "weaponStats": "Type: SHT; WA: -2; concealability: N; availability: R; damage/ammo: 4D6 (00); shots: 10; ROF: 2; reliability: ST; range: 50m",
+    "cost": "450"
+  },
+  {
+    "name": "Barrett-Arasaka Light 20mm",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: 0; concealability: N; availability: R; damage/ammo: 4D10 AP (20mm); shots: 10; ROF: 1; reliability: VR; range: 450m",
+    "cost": "2000"
+  },
+  {
+    "name": "Scorpion 16 Missile Launcher",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: -1; concealability: N; availability: R; damage: 7D10; shots: 1; ROF: 1; reliability: VR; range: 1km",
+    "cost": "3000"
+  },
+  {
+    "name": "Militech Arms RPG-A",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: -2; concealability: N; availability: R; damage: 6D10; shots: 1; ROF: 1; reliability: VR; range: 750m",
+    "cost": "1500"
+  },
+  {
+    "name": "Grenade",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: 0; concealability: P; availability: P; damage: varies by type; shots: 1; ROF: 1; reliability: VR; range: Throw",
+    "cost": "30"
+  },
+  {
+    "name": "C-6 Plastic Explosive",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: 0; concealability: P; availability: P; damage: 8D10 per kg; shots: 1; ROF: 1; reliability: VR; range: NA",
+    "cost": "100/kg"
+  },
+  {
+    "name": "Mine (all types)",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: 0; concealability: P; availability: P; damage: 4D10; shots: 1; ROF: 1; reliability: VR; range: NA",
+    "cost": "350"
+  },
+  {
+    "name": "K-A F-253 Flamethrower",
+    "category": "Weapon",
+    "weaponType": "Heavy weapon",
+    "weaponStats": "Type: HVY; WA: -2; concealability: N; availability: P; shots: 10; ROF: 1; reliability: ST; range: 50m",
+    "cost": "1500",
+    "customNotes": "Damage value is not fully legible in the provided image; verify it in the rulebook."
+  },
+  {
+    "name": "Technotronica 15 Microwaver",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: P; damage/ammo: 1D6†; shots: 10; ROF: 2; reliability: VR; range: 20m",
+    "cost": "400"
+  },
+  {
+    "name": "Militech Elect. LaserCannon",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: R; damage: 1-5D6; shots: 10; ROF: 2; reliability: UR; range: 200m",
+    "cost": "8000"
+  },
+  {
+    "name": "Avante P-1135 Needlegun",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: P; WA: 0; concealability: P; availability: P; damage/ammo: Drugs; shots: 15; ROF: 2; reliability: ST; range: 40m",
+    "cost": "200"
+  },
+  {
+    "name": "Enertex AKM Power Squirt",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: P; WA: -2; concealability: J; availability: C; damage/ammo: Drugs; shots: 50; ROF: 1; reliability: VR; range: 10m",
+    "cost": "15"
+  },
+  {
+    "name": "Nelspot \"Wombat\"",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: P; WA: -1; concealability: J; availability: C; damage/ammo: Drugs; shots: 20; ROF: 2; reliability: UR; range: 40m",
+    "cost": "200"
+  },
+  {
+    "name": "Miltech Electronics Taser",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: P; WA: -1; concealability: J; availability: C; damage/ammo: Stun; shots: 10; ROF: 1; reliability: ST; range: 10m",
+    "cost": "60"
+  },
+  {
+    "name": "EagleTech \"Tomcat\" C-Bow",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: EX; WA: 0; concealability: N; availability: C; damage: 4D6; shots: 12; ROF: 1; reliability: VR; range: 150m",
+    "cost": "150"
+  },
+  {
+    "name": "EagleTech \"Stryker\" X-Bow",
+    "category": "Weapon",
+    "weaponType": "Exotic",
+    "weaponStats": "Type: EX; WA: -1; concealability: N; availability: C; damage: 3D6+3; shots: 12; ROF: 1; reliability: VR; range: 50m",
+    "cost": "220"
+  },
+  {
+    "name": "Kendachi Monoknife",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: +1; concealability: P; availability: P; damage: 2D6; shots: NA; ROF: NA; reliability: VR; range: 1m",
+    "cost": "200"
+  },
+  {
+    "name": "Kendachi MonoKatana",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: +1; concealability: N; availability: R; damage: 4D6; shots: NA; ROF: NA; reliability: VR; range: 1m",
+    "cost": "600"
+  },
+  {
+    "name": "SPM-1 Battleglove",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: -2; concealability: N; availability: P; damage: 3D6/2D6; shots: NA; ROF: NA; reliability: VR; range: 1m",
+    "cost": "900"
+  },
+  {
+    "name": "Club",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: L; availability: C; damage: 1D6; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "Free"
+  },
+  {
+    "name": "Knife",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: P; availability: C; damage: 1D6; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "10-20"
+  },
+  {
+    "name": "Sword",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: N; availability: C; damage: 2D6+2; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "20-200"
+  },
+  {
+    "name": "Axe",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: -1; concealability: N; availability: C; damage: 2D6+3; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "20"
+  },
+  {
+    "name": "Nunchaku/Tonfa",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: L; availability: C; damage: 3D6; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "15"
+  },
+  {
+    "name": "Naginata",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: N; availability: P; damage: 3D6; shots: NA; ROF: NA; reliability: NA; range: 2m",
+    "cost": "100"
+  },
+  {
+    "name": "Shuriken",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: P; availability: C; damage: 1D6/3; shots: NA; ROF: NA; reliability: NA; range: Throw",
+    "cost": "2-3"
+  },
+  {
+    "name": "Switchblade",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: P; availability: C; damage: 1D6/2*; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "15"
+  },
+  {
+    "name": "Brass knuckles",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: 0; concealability: P; availability: C; damage: 1D6+2; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "10"
+  },
+  {
+    "name": "Sledgehammer",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: -1; concealability: N; availability: C; damage: 4D6; shots: NA; ROF: NA; reliability: NA; range: 1m",
+    "cost": "20"
+  },
+  {
+    "name": "Chainsaw",
+    "category": "Weapon",
+    "weaponType": "Melee",
+    "weaponStats": "Type: Melee; WA: -3; concealability: N; availability: C; damage: 4D6; shots: NA; ROF: NA; reliability: NA; range: 2m",
+    "cost": "80"
+  },
+  {
+    "name": "Sawed Combat Magnum",
+    "category": "Weapon",
+    "weaponType": "Handgun",
+    "weaponStats": "Type: P; WA: +1; concealability: J; availability: C; damage/ammo: 2D6+3 (.357); shots: 6; ROF: 2; reliability: VR"
+  },
+  {
+    "name": "Llama Commander",
+    "category": "Weapon",
+    "weaponType": "Handgun",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: C; damage/ammo: 4D6 (.44); shots: 6; ROF: 1; reliability: ST"
+  },
+  {
+    "name": "Colt .45 \"Peacemaker\"",
+    "category": "Weapon",
+    "weaponType": "Handgun",
+    "weaponStats": "Type: P; WA: 0; concealability: J; availability: R; damage/ammo: 2D6+2 (.45); shots: 6; ROF: 1; reliability: VR"
+  },
+  {
+    "name": "Colt .38 Detective",
+    "category": "Weapon",
+    "weaponType": "Handgun",
+    "weaponStats": "Type: P; WA: +1; concealability: J; availability: C; damage/ammo: 1D6+2 (.38); shots: 6; ROF: 1; reliability: VR"
+  },
+  {
+    "name": "C.O.P. .357 Derringer",
+    "category": "Weapon",
+    "weaponType": "Handgun",
+    "weaponStats": "Type: P; WA: 0; concealability: P; availability: C; damage/ammo: 2D6+3 (.357); shots: 4; ROF: 2; reliability: VR"
+  },
+  {
+    "name": "UZI",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: +2; concealability: J; availability: C; damage/ammo: 2D6+1 (9mm); shots: 30; ROF: 20; reliability: VR"
+  },
+  {
+    "name": "Skorpion Vz61 Scorpion",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: +2; concealability: P; availability: C; damage/ammo: 1D6+1 (9mm); shots: 20; ROF: 25; reliability: VR"
+  },
+  {
+    "name": "Ingram MAC 10",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: -1; concealability: L; availability: C; damage/ammo: 2D6+3 (10mm); shots: 30; ROF: 15; reliability: UR"
+  },
+  {
+    "name": "H&K MP5 & MP5K",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: +1; concealability: L; availability: C; damage/ammo: 2D6+1 (9mm); shots: 30; ROF: 20; reliability: ST"
+  },
+  {
+    "name": "Thompson M1",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: +2; concealability: N; availability: C; damage/ammo: 2D6+2 (.45); shots: 20; ROF: 20; reliability: VR"
+  },
+  {
+    "name": "Bushmaster SMC",
+    "category": "Weapon",
+    "weaponType": "Submachinegun",
+    "weaponStats": "Type: SMG; WA: 0; concealability: J; availability: C; damage/ammo: 4D6 (5.56); shots: 30; ROF: 20; reliability: ST"
+  },
+  {
+    "name": "FN-FAL",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: C; damage/ammo: 6D6+2 (7.56); shots: 20; ROF: 21; reliability: VR"
+  },
+  {
+    "name": "Standard NATO Rifle",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: C; damage/ammo: 5D6 (7.56); shots: 30; ROF: 20; reliability: VR"
+  },
+  {
+    "name": "AK 47, AKMS",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: E; damage/ammo: 5D6 (7.56); shots: 30; ROF: 20; reliability: VR"
+  },
+  {
+    "name": "M-16A2 & M-16A4",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: +2; concealability: N; availability: C; damage/ammo: 4D6 (5.56); shots: 30; ROF: 25; reliability: UR"
+  },
+  {
+    "name": "Steyr AUG",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: 0; concealability: N; availability: C; damage/ammo: 4D6 (5.56); shots: 30; ROF: 25; reliability: UR"
+  },
+  {
+    "name": "Winchester M70",
+    "category": "Weapon",
+    "weaponType": "Rifle",
+    "weaponStats": "Type: RIF; WA: +3; concealability: N; availability: R; damage/ammo: 5D6+1 (7.62); shots: 10; ROF: 1; reliability: VR"
+  },
+  {
+    "name": "CAWS",
+    "category": "Weapon",
+    "weaponType": "Shotgun",
+    "weaponStats": "Type: SHG; WA: 0; concealability: N; availability: R; damage/ammo: 4D6 (00); shots: 10; ROF: 10; reliability: ST"
+  },
+  {
+    "name": "C.O.P. 357 Derringer",
+    "category": "Weapon",
+    "weaponType": "Exotic handgun",
+    "weaponStats": "Type: P; WA: 0; concealability: P; availability: C; damage/ammo: 2D6+3 (.357); shots: 4; ROF: 2; reliability: VR",
+    "sourceReference": "Cyberpunk 2020 (2nd ed.), p. 66"
+  },
+  {
+    "name": "Vz61 Skorpion",
+    "category": "Weapon",
+    "weaponType": "Light submachinegun",
+    "weaponStats": "Type: SMG; WA: +2; concealability: J; availability: P; damage/ammo: 1D6 (.25); shots: 20; ROF: 25; reliability: VR",
+    "sourceReference": "Cyberpunk 2020 (2nd ed.), p. 66"
+  }
+]
