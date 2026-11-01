@@ -25,7 +25,6 @@
           <button class="nav-item" type="button" data-view="characters"><span class="nav-icon">◈</span>Characters<span class="nav-count" id="character-count">0</span></button>
           <button class="nav-item" type="button" data-view="campaigns"><span class="nav-icon">▤</span>Campaigns</button>
           <button class="nav-item" type="button" data-view="sheet"><span class="nav-icon">▣</span>Character sheet</button>
-          <button class="nav-item" type="button" data-view="play"><span class="nav-icon">▷</span>Play view</button>
         </nav>
         <div class="account-controls" id="account-controls">
           <span class="account-name" id="account-name">Local workspace</span>
@@ -63,7 +62,7 @@
             <div class="page-heading">
               <div><p class="eyebrow">YOUR CHARACTER, IN ONE PLACE</p><h1 id="sheet-title">Character sheet<span class="heading-period">.</span></h1><p class="page-subtitle">Character details and personal equipment in one place.</p></div>
               <label class="sr-only" for="sheet-character">Choose a character</label>
-              <select id="sheet-character" class="select-control play-character-select"></select>
+              <select id="sheet-character" class="select-control"></select>
             </div>
             <div id="sheet-content"></div>
           </section>
@@ -74,15 +73,6 @@
               <div class="heading-actions"><button class="button" type="button" data-action="join-campaign">Join shared campaign</button><button class="button button-primary" type="button" data-new="campaign"><span aria-hidden="true">＋</span> New campaign</button></div>
             </div>
             <div id="campaigns-content"></div>
-          </section>
-
-          <section class="view-panel" id="view-play" aria-labelledby="play-title" hidden>
-            <div class="page-heading">
-              <div><p class="eyebrow">AT THE TABLE</p><h1 id="play-title">Play view<span class="heading-period">.</span></h1><p class="page-subtitle">The essentials, without the noise.</p></div>
-              <label class="sr-only" for="play-character">Choose a character</label>
-              <select id="play-character" class="select-control play-character-select"></select>
-            </div>
-            <div id="play-content"></div>
           </section>
 
           <section class="view-panel" id="view-board" aria-labelledby="board-title" hidden>

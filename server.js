@@ -21,6 +21,8 @@ const MAX_EVENTS = 80;
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CHARACTERS_PER_ACCOUNT = 10;
 const MAX_CAMPAIGN_PLAYERS = 10;
+const MAX_DIRECT_MESSAGE_LENGTH = 2000;
+const MAX_STORED_DIRECT_MESSAGES = 5000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PORTRAIT_BYTES = 2 * 1024 * 1024;
 const ATTRIBUTE_KEYS = ["INT", "REF", "TECH", "COOL", "ATTR", "LUCK", "MA", "BODY", "EMP"];
@@ -42,12 +44,13 @@ const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".ico": "image/x-icon",
+  ".jpg": "image/jpeg",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml"
 };
 
-let store = { rooms: {}, accounts: {}, sessions: {}, catalog: [] };
+let store = { rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
 let defaultCatalog = [];
 let saveQueue = Promise.resolve();
 const authAttempts = new Map();
@@ -340,6 +343,7 @@ function normalizePiece(piece, kind) {
     normalized.attributes = attributes;
     normalized.gear = Array.isArray(piece.gear) ? piece.gear.slice(0, 20).map(item => boundedText(item, 100)).filter(Boolean) : [];
     normalized.role = boundedText(piece.role, 80);
+    normalized.portraitUrl = /^\/api\/portraits\/[0-9a-f-]{36}$/i.test(piece.portraitUrl) ? piece.portraitUrl : "";
   } else {
     normalized.color = /^#[0-9a-f]{6}$/i.test(piece.color) ? piece.color : "#717d65";
   }
@@ -453,11 +457,30 @@ async function loadStore() {
       rooms,
       accounts,
       sessions,
-      catalog: Array.isArray(parsed.catalog) ? parsed.catalog.map(sanitizeCatalogItem).filter(Boolean).slice(0, 5000) : []
+      catalog: Array.isArray(parsed.catalog) ? parsed.catalog.map(sanitizeCatalogItem).filter(Boolean).slice(0, 5000) : [],
+      friendships: Array.isArray(parsed.friendships) ? parsed.friendships.filter(item =>
+        Array.isArray(item.userIds) && item.userIds.length === 2 && item.userIds[0] !== item.userIds[1] &&
+        item.userIds.every(userId => typeof userId === "string" && accounts[userId])
+      ).slice(0, 10000) : [],
+      friendRequests: Array.isArray(parsed.friendRequests) ? parsed.friendRequests.filter(item =>
+        item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
+        item.fromUserId !== item.toUserId && accounts[item.fromUserId] && accounts[item.toUserId]
+      ).slice(0, 10000) : [],
+      directMessages: Array.isArray(parsed.directMessages) ? parsed.directMessages.filter(item =>
+        item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
+        item.fromUserId !== item.toUserId && typeof item.text === "string" && accounts[item.fromUserId] && accounts[item.toUserId]
+      ).slice(-MAX_STORED_DIRECT_MESSAGES) : []
     };
+    for (const room of Object.values(store.rooms)) {
+      for (const token of room.board.tokens) {
+        if (token.kind !== "character") continue;
+        const owner = ownerAccountOfCharacter(token.characterId);
+        token.portraitUrl = owner?.userId === token.ownerUserId ? publicCharacter(owner.character).portraitUrl : "";
+      }
+    }
   } catch (error) {
     if (error.code === "ENOENT") {
-      store = { rooms: {}, accounts: {}, sessions: {}, catalog: [] };
+      store = { rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
       return;
     }
     throw error;
@@ -622,6 +645,44 @@ function publicAccount(session) {
   };
 }
 
+function friendshipKey(firstUserId, secondUserId) {
+  return [firstUserId, secondUserId].sort().join(":");
+}
+
+function areFriends(firstUserId, secondUserId) {
+  const key = friendshipKey(firstUserId, secondUserId);
+  return store.friendships.some(friendship => friendshipKey(...friendship.userIds) === key);
+}
+
+function publicFriendData(userId) {
+  const friends = store.friendships.map(friendship => friendship.userIds.find(id => id !== userId))
+    .filter(friendId => friendId && store.accounts[friendId])
+    .map(friendId => ({ id: friendId, username: store.accounts[friendId].username }));
+  const requests = store.friendRequests.filter(request => request.fromUserId === userId || request.toUserId === userId)
+    .map(request => ({
+      id: request.id,
+      fromUserId: request.fromUserId,
+      fromUsername: store.accounts[request.fromUserId]?.username || "Unknown user",
+      toUserId: request.toUserId,
+      toUsername: store.accounts[request.toUserId]?.username || "Unknown user",
+      createdAt: request.createdAt
+    }));
+  const messages = store.directMessages.filter(message =>
+    (message.fromUserId === userId || message.toUserId === userId) && areFriends(message.fromUserId, message.toUserId)
+  ).slice(-100).map(message => ({
+    id: message.id,
+    fromUserId: message.fromUserId,
+    fromUsername: store.accounts[message.fromUserId]?.username || "Unknown user",
+    toUserId: message.toUserId,
+    toUsername: store.accounts[message.toUserId]?.username || "Unknown user",
+    text: message.text,
+    campaignId: message.campaignId || "",
+    campaignName: message.campaignId ? store.rooms[message.campaignId]?.name || "Campaign" : "",
+    createdAt: message.createdAt
+  }));
+  return { friends, requests, messages };
+}
+
 function ownerAccountOfCharacter(characterId) {
   for (const [userId, account] of Object.entries(store.accounts)) {
     const character = account.characters.find(item => item.id === characterId);
@@ -694,6 +755,25 @@ function broadcastRoomEvent(roomId, event) {
   for (const socket of clients) {
     if (socket.roomId !== roomId || socket.readyState !== WebSocket.OPEN) continue;
     send(socket, { type: "room-event", event: eventForViewer(event, socket) });
+  }
+}
+
+function syncCharacterToRooms(character, ownerUserId) {
+  const updatedCharacter = publicCharacter(character);
+  for (const room of Object.values(store.rooms)) {
+    let roomBoardChanged = false;
+    for (const token of room.board.tokens) {
+      if (token.kind !== "character" || token.characterId !== character.id || token.ownerUserId !== ownerUserId) continue;
+      token.name = character.name;
+      token.role = character.role || "Character";
+      token.attributes = { ...character.attributes };
+      token.health = { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 };
+      token.gear = (character.inventory || []).slice(0, 20).map(item => item.name);
+      token.portraitUrl = updatedCharacter.portraitUrl;
+      roomBoardChanged = true;
+    }
+    if (roomBoardChanged) broadcastBoardState(room);
+    if (room.roster.some(entry => entry.characterId === character.id)) broadcastRoster(room);
   }
 }
 
@@ -772,6 +852,96 @@ async function handleApi(request, response, requestUrl) {
     return jsonResponse(response, 403, { error: "Request origin was rejected." });
   }
 
+  if (pathname === "/api/users/search") {
+    if (request.method !== "GET") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const username = boundedText(requestUrl.searchParams.get("username"), 24);
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) return jsonResponse(response, 400, { error: "Enter an exact username with 3–24 letters, numbers, or underscores." });
+    const result = Object.entries(store.accounts).find(([, account]) =>
+      account.usernameKey === username.toLowerCase()
+    );
+    const users = result && result[0] !== session.userId
+      ? [{ id: result[0], username: result[1].username }]
+      : [];
+    return jsonResponse(response, 200, { users });
+  }
+
+  if (pathname === "/api/friends") {
+    if (request.method !== "GET") return jsonResponse(response, 405, { error: "Method not allowed." });
+    return jsonResponse(response, 200, publicFriendData(session.userId));
+  }
+
+  if (pathname === "/api/friend-requests") {
+    if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const input = await readJsonBody(request);
+    const toUserId = boundedText(input.toUserId, 100);
+    if (!store.accounts[toUserId] || toUserId === session.userId) return jsonResponse(response, 404, { error: "That user could not be found." });
+    if (areFriends(session.userId, toUserId)) return jsonResponse(response, 409, { error: "You are already friends." });
+    if (store.friendRequests.some(request => request.fromUserId === session.userId && request.toUserId === toUserId)) {
+      return jsonResponse(response, 409, { error: "A friend request is already pending." });
+    }
+    if (store.friendRequests.some(request => request.fromUserId === toUserId && request.toUserId === session.userId)) {
+      return jsonResponse(response, 409, { error: "This user already sent you a request. Accept it from your Requests tab." });
+    }
+    store.friendRequests.push({ id: randomUUID(), fromUserId: session.userId, toUserId, createdAt: new Date().toISOString() });
+    await persistStore();
+    return jsonResponse(response, 201, publicFriendData(session.userId));
+  }
+
+  const acceptRequestMatch = pathname.match(/^\/api\/friend-requests\/([A-Za-z0-9_-]+)\/accept$/);
+  if (acceptRequestMatch) {
+    if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const pendingRequest = store.friendRequests.find(item => item.id === acceptRequestMatch[1]);
+    if (!pendingRequest) return jsonResponse(response, 404, { error: "Friend request not found." });
+    if (pendingRequest.toUserId !== session.userId) return jsonResponse(response, 403, { error: "Only the recipient can accept this request." });
+    store.friendRequests = store.friendRequests.filter(item => item.id !== pendingRequest.id);
+    if (!areFriends(pendingRequest.fromUserId, pendingRequest.toUserId)) {
+      store.friendships.push({ userIds: [pendingRequest.fromUserId, pendingRequest.toUserId].sort(), createdAt: new Date().toISOString() });
+    }
+    await persistStore();
+    return jsonResponse(response, 200, publicFriendData(session.userId));
+  }
+
+  const friendRequestMatch = pathname.match(/^\/api\/friend-requests\/([A-Za-z0-9_-]+)$/);
+  if (friendRequestMatch) {
+    if (request.method !== "DELETE") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const friendRequest = store.friendRequests.find(item => item.id === friendRequestMatch[1]);
+    if (!friendRequest) return jsonResponse(response, 404, { error: "Friend request not found." });
+    if (friendRequest.fromUserId !== session.userId && friendRequest.toUserId !== session.userId) {
+      return jsonResponse(response, 403, { error: "You cannot change another user's friend request." });
+    }
+    store.friendRequests = store.friendRequests.filter(item => item.id !== friendRequest.id);
+    await persistStore();
+    return jsonResponse(response, 200, publicFriendData(session.userId));
+  }
+
+  if (pathname === "/api/messages") {
+    if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const input = await readJsonBody(request);
+    const toUserId = boundedText(input.toUserId, 100);
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    const campaignId = boundedText(input.campaignId, 100);
+    if (text.length < 1 || text.length > MAX_DIRECT_MESSAGE_LENGTH) {
+      return jsonResponse(response, 400, { error: `Messages must contain 1–${MAX_DIRECT_MESSAGE_LENGTH} characters.` });
+    }
+    if (!areFriends(session.userId, toUserId)) return jsonResponse(response, 403, { error: "You can only message an accepted friend." });
+    if (campaignId && store.rooms[campaignId]?.ownerUserId !== session.userId) {
+      return jsonResponse(response, 403, { error: "Only the campaign host can send an invite for that campaign." });
+    }
+    const message = {
+      id: randomUUID(),
+      fromUserId: session.userId,
+      toUserId,
+      text,
+      campaignId,
+      createdAt: new Date().toISOString()
+    };
+    store.directMessages.push(message);
+    store.directMessages = store.directMessages.slice(-MAX_STORED_DIRECT_MESSAGES);
+    await persistStore();
+    const publicMessage = publicFriendData(session.userId).messages.find(item => item.id === message.id);
+    return jsonResponse(response, 201, { message: publicMessage });
+  }
+
   if (pathname === "/api/characters") {
     if (request.method === "GET") return jsonResponse(response, 200, { characters: session.account.characters.map(publicCharacter), maxCharacters: MAX_CHARACTERS_PER_ACCOUNT });
     if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
@@ -794,20 +964,7 @@ async function handleApi(request, response, requestUrl) {
       const character = sanitizeCharacter(input, session.account.characters[index]);
       if (!character) return jsonResponse(response, 400, { error: "Enter a valid character name, health values, and whole-number eddies from 0 to 999,999,999." });
       session.account.characters[index] = character;
-      for (const room of Object.values(store.rooms)) {
-        let roomBoardChanged = false;
-        for (const token of room.board.tokens) {
-          if (token.kind !== "character" || token.characterId !== character.id || token.ownerUserId !== session.userId) continue;
-          token.name = character.name;
-          token.role = character.role || "Character";
-          token.attributes = { ...character.attributes };
-          token.health = { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 };
-          token.gear = (character.inventory || []).slice(0, 20).map(item => item.name);
-          roomBoardChanged = true;
-        }
-        if (roomBoardChanged) broadcastBoardState(room);
-        if (room.roster.some(entry => entry.characterId === character.id)) broadcastRoster(room);
-      }
+      syncCharacterToRooms(character, session.userId);
       await persistStore();
       return jsonResponse(response, 200, { character: publicCharacter(character) });
     }
@@ -853,6 +1010,7 @@ async function handleApi(request, response, requestUrl) {
     character.portraitId = portraitId;
     character.portraitMime = mime;
     character.portraitExtension = extension;
+    syncCharacterToRooms(character, session.userId);
     await persistStore();
     if (oldPortraitId) {
       if (oldExtension && [".jpg", ".png", ".webp"].includes(oldExtension)) {
@@ -867,9 +1025,9 @@ async function handleApi(request, response, requestUrl) {
   const portraitMatch = pathname.match(/^\/api\/portraits\/([0-9a-f-]{36})$/i);
   if (portraitMatch) {
     const portraitId = portraitMatch[1];
-    const character = session.account.characters.find(item => item.portraitId === portraitId);
-    if (!character) return jsonResponse(response, 404, { error: "Portrait not found." });
     if (request.method === "POST") {
+      const character = session.account.characters.find(item => item.portraitId === portraitId);
+      if (!character) return jsonResponse(response, 404, { error: "Portrait not found." });
       if (!requestOriginIsValid(request)) return jsonResponse(response, 403, { error: "Request origin was rejected." });
       const mime = request.headers["content-type"]?.split(";")[0].toLowerCase();
       if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) return jsonResponse(response, 415, { error: "Portrait must be a JPEG, PNG, or WebP image." });
@@ -888,10 +1046,21 @@ async function handleApi(request, response, requestUrl) {
       character.portraitId = portraitId;
       character.portraitMime = mime;
       character.portraitExtension = extension;
+      syncCharacterToRooms(character, session.userId);
       await persistStore();
       return jsonResponse(response, 200, { portraitUrl: `/api/portraits/${portraitId}` });
     }
     if (request.method !== "GET") return jsonResponse(response, 405, { error: "Method not allowed." });
+    const portraitOwner = Object.entries(store.accounts).flatMap(([userId, account]) =>
+      account.characters.filter(character => character.portraitId === portraitId).map(character => ({ userId, character }))
+    )[0];
+    if (!portraitOwner) return jsonResponse(response, 404, { error: "Portrait not found." });
+    const canViewSharedPortrait = Object.values(store.rooms).some(room =>
+      room.roster.some(entry => entry.characterId === portraitOwner.character.id) &&
+      (room.ownerUserId === session.userId || room.roster.some(entry => entry.userId === session.userId))
+    );
+    if (portraitOwner.userId !== session.userId && !canViewSharedPortrait) return jsonResponse(response, 404, { error: "Portrait not found." });
+    const character = portraitOwner.character;
     if (!character.portraitExtension || ![".jpg", ".png", ".webp"].includes(character.portraitExtension)) return jsonResponse(response, 404, { error: "Portrait not found." });
     try {
       const image = await readFile(path.join(PORTRAIT_DIR, `${portraitId}${character.portraitExtension}`));

@@ -30,7 +30,6 @@ const VIEWS = {
   characters: "CHARACTERS",
   campaigns: "CAMPAIGNS",
   sheet: "CHARACTER SHEET",
-  play: "PLAY VIEW",
   board: "TACTICAL BOARD"
 };
 const makeId = () => globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -165,7 +164,7 @@ function loadWorkspace() {
     if (!parsed || !Array.isArray(parsed.characters) || !Array.isArray(parsed.campaigns) || !Array.isArray(parsed.gear)) {
       throw new Error("Saved workspace has an invalid shape.");
     }
-    const workspace = { demo: false, activity: [], ...parsed, characters: parsed.characters.map(normalizeCharacter) };
+    const workspace = { demo: false, activity: [], recentlyOpenedCharacterIds: [], ...parsed, characters: parsed.characters.map(normalizeCharacter) };
     const staleDemoData = !workspace.demo && (
       workspace.campaigns.some(campaign => campaign.id === "demo-campaign") ||
       workspace.gear.some(item => String(item.id).startsWith("demo-")) ||
@@ -187,6 +186,13 @@ function loadWorkspace() {
 
 let workspace = loadWorkspace();
 let signedInAccount = null;
+let friendData = { friends: [], requests: [], messages: [] };
+let friendSearchResults = [];
+let friendSearchUsername = "";
+let friendSearchPerformed = false;
+let friendTab = "friends";
+let selectedMessageFriendId = "";
+let pendingCampaignInviteCode = new URLSearchParams(location.search).get("campaignInvite") || "";
 let campaignRoster = [];
 let campaignPlayerCount = 0;
 let boardIsGm = false;
@@ -310,6 +316,11 @@ async function signOutAccount() {
   activeSocket?.close();
   activeSocket = null;
   signedInAccount = null;
+  friendData = { friends: [], requests: [], messages: [] };
+  friendSearchResults = [];
+  friendSearchUsername = "";
+  friendSearchPerformed = false;
+  selectedMessageFriendId = "";
   boardIsGm = false;
   activeGmKey = "";
   enemyTemplates = [];
@@ -339,6 +350,7 @@ async function loadAuthenticatedData(account) {
   saveWorkspace();
   updateAccountControls();
   renderAll();
+  await refreshFriends();
 }
 
 async function initializeAccount() {
@@ -346,12 +358,108 @@ async function initializeAccount() {
   try {
     const response = await apiRequest("/api/me");
     await loadAuthenticatedData(response.account);
+    continuePendingCampaignInvite();
   } catch (error) {
     if (error.status !== 401) {
       console.error("Could not check the account session.", error);
       showToast("Couldn't connect to the account service. Start the server and refresh.", true);
+    } else if (pendingCampaignInviteCode) {
+      openAuthForm("login");
     }
   }
+}
+
+async function refreshFriends(showErrors = true) {
+  if (!signedInAccount) {
+    friendData = { friends: [], requests: [], messages: [] };
+    renderDashboard();
+    return;
+  }
+  try {
+    friendData = await apiRequest("/api/friends");
+    if (!friendData.friends.some(friend => friend.id === selectedMessageFriendId)) {
+      selectedMessageFriendId = friendData.friends[0]?.id || "";
+    }
+    renderDashboard();
+  } catch (error) {
+    console.error("Could not load friends and messages.", error);
+    if (showErrors) showToast(error.message || "Could not load friends and messages.", true);
+  }
+}
+
+async function searchFriendUsers(form) {
+  const username = String(new FormData(form).get("username") || "").trim();
+  if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) return showToast("Enter an exact username with 3–24 letters, numbers, or underscores.", true);
+  try {
+    const result = await apiRequest(`/api/users/search?username=${encodeURIComponent(username)}`);
+    friendSearchResults = result.users;
+    friendSearchUsername = username;
+    friendSearchPerformed = true;
+    renderDashboard();
+  } catch (error) {
+    showToast(error.message || "Could not search for that user.", true);
+  }
+}
+
+async function updateFriendRequest(requestId, action) {
+  try {
+    if (action === "accept") {
+      await apiRequest(`/api/friend-requests/${encodeURIComponent(requestId)}/accept`, { method: "POST", body: JSON.stringify({}) });
+    } else {
+      await apiRequest(`/api/friend-requests/${encodeURIComponent(requestId)}`, { method: "DELETE" });
+    }
+    await refreshFriends(false);
+    showToast(action === "accept" ? "Friend request accepted." : "Friend request removed.");
+  } catch (error) {
+    showToast(error.message || "Could not update the friend request.", true);
+  }
+}
+
+async function sendFriendRequest(userId) {
+  try {
+    await apiRequest("/api/friend-requests", { method: "POST", body: JSON.stringify({ toUserId: userId }) });
+    await refreshFriends(false);
+    showToast("Friend request sent.");
+  } catch (error) {
+    showToast(error.message || "Could not send the friend request.", true);
+  }
+}
+
+async function sendDirectMessage(toUserId, text, campaignId = "") {
+  const response = await apiRequest("/api/messages", {
+    method: "POST",
+    body: JSON.stringify({ toUserId, text, campaignId })
+  });
+  await refreshFriends(false);
+  friendTab = "messages";
+  selectedMessageFriendId = toUserId;
+  renderDashboard();
+  return response.message;
+}
+
+async function sendCampaignInvite(campaign, friendId) {
+  const friend = friendData.friends.find(item => item.id === friendId);
+  if (!friend || !signedInAccount) return showToast("Select one of your friends to invite.", true);
+  try {
+    await ensureCampaignRoom(campaign);
+    await sendDirectMessage(friendId, `I'd like you to join "${campaign.name}".`, campaign.id);
+    showToast(`Campaign invite sent to ${friend.username}.`);
+  } catch (error) {
+    showToast(error.message || "Could not send the campaign invite.", true);
+  }
+}
+
+function continuePendingCampaignInvite() {
+  if (!pendingCampaignInviteCode || !signedInAccount) return;
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(pendingCampaignInviteCode)) {
+    pendingCampaignInviteCode = "";
+    history.replaceState(null, "", location.pathname);
+    return showToast("That campaign invite link is invalid.", true);
+  }
+  const campaignId = pendingCampaignInviteCode;
+  pendingCampaignInviteCode = "";
+  history.replaceState(null, "", location.pathname);
+  openJoinCampaignForm(campaignId);
 }
 
 function showToast(message, isError = false) {
@@ -364,6 +472,15 @@ function showToast(message, isError = false) {
 
 function addActivity(text, detail) {
   workspace.activity = [{ id: makeId(), text, detail, date: new Date().toISOString(), tone: "acid" }, ...(workspace.activity ?? [])].slice(0, 8);
+}
+
+function recordCharacterOpened(characterId) {
+  if (!characterId) return;
+  const recent = [characterId, ...(workspace.recentlyOpenedCharacterIds || []).filter(id => id !== characterId)].slice(0, 20);
+  if (recent.length === (workspace.recentlyOpenedCharacterIds || []).length &&
+    recent.every((id, index) => id === workspace.recentlyOpenedCharacterIds[index])) return;
+  workspace.recentlyOpenedCharacterIds = recent;
+  saveWorkspace();
 }
 
 function selectedCharacter(id) {
@@ -496,29 +613,73 @@ function metricCard(label, value, detail) {
 }
 
 function renderDashboard() {
-  const characterRows = workspace.characters.slice(0, 4).map(character => `
-    <a class="character-row" href="#" data-action="play-character" data-id="${escapeHtml(character.id)}">
-      <div class="portrait" aria-hidden="true">${escapeHtml(initials(character.name))}</div>
-      <div class="character-row-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.role || "Role not set")} · ${escapeHtml(character.handle || "No handle")}</small></div>
+  const characterById = new Map(workspace.characters.map(character => [character.id, character]));
+  const recentCharacters = (workspace.recentlyOpenedCharacterIds || []).map(id => characterById.get(id)).filter(Boolean).slice(0, 3);
+  const characterRows = recentCharacters.map(character => `
+    <button class="character-row" type="button" data-action="open-character-sheet" data-id="${escapeHtml(character.id)}">
+      ${character.portraitUrl
+        ? `<img class="portrait" src="${escapeHtml(character.portraitUrl)}" alt="${escapeHtml(character.name)} portrait">`
+        : `<span class="portrait" aria-hidden="true">${escapeHtml(initials(character.name))}</span>`}
+      <span class="character-row-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.role || "Role not set")} · ${escapeHtml(character.handle || "No handle")}</small></span>
       <span class="character-level">OPEN →</span>
-    </a>`).join("");
-  const recent = (workspace.activity ?? []).slice(0, 4).map(item => `
-    <div class="activity-item"><span class="activity-mark ${item.tone === "acid" ? "acid" : ""}"></span><div class="activity-copy">${escapeHtml(item.text)}<small>${escapeHtml(item.detail || "")} · ${escapeHtml(item.date ? new Date(item.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "")}</small></div></div>`).join("");
+    </button>`).join("");
+  const recentMessages = [...friendData.messages].slice(-5).reverse().map(message => {
+    const sentByCurrentUser = message.fromUserId === signedInAccount?.id;
+    const otherUsername = sentByCurrentUser ? message.toUsername : message.fromUsername;
+    const campaignLink = message.campaignId
+      ? `<a class="message-invite-link" href="/?campaignInvite=${encodeURIComponent(message.campaignId)}">Open campaign invite →</a>`
+      : "";
+    return `<article class="activity-item"><span class="activity-mark ${sentByCurrentUser ? "acid" : ""}"></span><div class="activity-copy"><strong>${sentByCurrentUser ? "To" : "From"} ${escapeHtml(otherUsername || "Friend")}</strong><p>${escapeHtml(message.text)}</p>${campaignLink}<small>${escapeHtml(new Date(message.createdAt).toLocaleString())}</small></div></article>`;
+  }).join("");
   const latestCampaign = workspace.campaigns[0];
   const campaignsPreview = latestCampaign ? `<div class="campaign-strip"><div class="campaign-strip-icon" aria-hidden="true">▤</div><div class="campaign-strip-copy"><strong>${escapeHtml(latestCampaign.name)}</strong><small>${escapeHtml(latestCampaign.description || "No campaign notes yet.")}</small></div><span class="tag">${(latestCampaign.sessions ?? []).length} ${(latestCampaign.sessions ?? []).length === 1 ? "SESSION" : "SESSIONS"}</span></div>` :
     `<div class="campaign-strip"><div class="campaign-strip-copy"><strong>No campaign on the board yet</strong><small>Start one to keep sessions and crew notes together.</small></div><button class="button button-quiet" type="button" data-new="campaign">Create campaign</button></div>`;
 
   document.getElementById("dashboard-content").innerHTML = `${demoBanner()}
-    <div class="section-grid stats-grid">
-      ${metricCard("PLAYER CHARACTERS", workspace.characters.length, "In your roster")}
-      ${metricCard("CAMPAIGNS", workspace.campaigns.length, "Stories in progress")}
-      ${metricCard("GEAR ENTRIES", workspace.gear.length, "Across all characters")}
-      ${metricCard("RECENT SESSIONS", workspace.campaigns.reduce((total, campaign) => total + (campaign.sessions ?? []).length, 0), "Logged in your campaigns")}
-    </div>
+    <div class="section-grid stats-grid">${metricCard("PLAYER CHARACTERS", workspace.characters.length, "In your roster")}${metricCard("CAMPAIGNS", workspace.campaigns.length, "Stories in progress")}</div>
     <div class="section-grid dashboard-grid">
-      <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR CREW</p><h2>Characters</h2></div><button class="text-button" type="button" data-view-link="characters">View roster →</button></div><div class="panel-body">${characterRows ? `<div class="character-list">${characterRows}</div>` : emptyState("ROSTER EMPTY", "Every crew starts somewhere.", "Create a character and start filling out your table.", "Create a character", "character")}</div></section>
-      <section class="panel"><div class="panel-head"><div><p class="section-kicker">THE LATEST</p><h2>Recent activity</h2></div></div><div class="panel-body">${recent ? `<div class="activity-list">${recent}</div>` : `<div class="activity-copy">Your table's updates will show up here.</div>`}</div></section>
+      <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR CREW</p><h2>Recently opened sheets</h2></div><button class="text-button" type="button" data-view-link="characters">View roster →</button></div><div class="panel-body">${characterRows ? `<div class="character-list">${characterRows}</div>` : `<div class="activity-copy">${workspace.characters.length ? "Open a character sheet to see it here." : "Create a character to start your roster."}</div>`}</div></section>
+      <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR NETWORK</p><h2>Friends</h2></div></div><div class="friend-tabs" role="tablist" aria-label="Friend tools"><button class="friend-tab ${friendTab === "friends" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "friends"}" data-friend-tab="friends">Friends</button><button class="friend-tab ${friendTab === "requests" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "requests"}" data-friend-tab="requests">Requests${friendData.requests.filter(item => item.toUserId === signedInAccount?.id).length ? ` · ${friendData.requests.filter(item => item.toUserId === signedInAccount?.id).length}` : ""}</button><button class="friend-tab ${friendTab === "messages" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "messages"}" data-friend-tab="messages">Messages</button></div><div class="panel-body friend-panel-body">${renderFriendPanel()}</div></section>
+      <section class="panel dashboard-messages-panel"><div class="panel-head"><div><p class="section-kicker">THE LATEST</p><h2>Recent activity</h2></div><button class="text-button" type="button" data-action="refresh-friends">Refresh</button></div><div class="panel-body">${recentMessages ? `<div class="activity-list">${recentMessages}</div>` : `<div class="activity-copy">${signedInAccount ? "Recent messages from your friends will appear here." : "Sign in to see messages from friends."}</div>`}</div></section>
     </div>${campaignsPreview}`;
+}
+
+function renderFriendPanel() {
+  if (!signedInAccount) return `<div class="board-empty-inline">Sign in to find friends and message them.</div><button class="button button-primary friend-sign-in" type="button" data-action="open-auth">Sign in</button>`;
+  if (friendTab === "requests") {
+    const incoming = friendData.requests.filter(item => item.toUserId === signedInAccount.id);
+    const outgoing = friendData.requests.filter(item => item.fromUserId === signedInAccount.id);
+    return `<div class="friend-request-list">${incoming.map(request => `<div class="friend-list-row"><div><strong>${escapeHtml(request.fromUsername)}</strong><small>Wants to connect</small></div><div class="friend-actions"><button class="button button-primary" type="button" data-action="accept-friend-request" data-id="${escapeHtml(request.id)}">Accept</button><button class="button button-quiet" type="button" data-action="decline-friend-request" data-id="${escapeHtml(request.id)}">Decline</button></div></div>`).join("")}${outgoing.map(request => `<div class="friend-list-row"><div><strong>${escapeHtml(request.toUsername)}</strong><small>Request pending</small></div><button class="button button-quiet" type="button" data-action="decline-friend-request" data-id="${escapeHtml(request.id)}">Cancel</button></div>`).join("")}${!incoming.length && !outgoing.length ? `<div class="activity-copy">No friend requests right now.</div>` : ""}</div>`;
+  }
+  if (friendTab === "messages") {
+    const selectedFriend = friendData.friends.find(friend => friend.id === selectedMessageFriendId) || friendData.friends[0];
+    if (!selectedFriend) return `<div class="board-empty-inline">Add a friend before sending messages.</div>`;
+    selectedMessageFriendId = selectedFriend.id;
+    const conversation = friendData.messages.filter(message =>
+      (message.fromUserId === signedInAccount.id && message.toUserId === selectedFriend.id) ||
+      (message.fromUserId === selectedFriend.id && message.toUserId === signedInAccount.id)
+    );
+    return `<label class="form-field friend-conversation-select"><span class="field-label">Conversation</span><select class="field-select" data-friend-conversation>${friendData.friends.map(friend => `<option value="${escapeHtml(friend.id)}" ${friend.id === selectedFriend.id ? "selected" : ""}>${escapeHtml(friend.username)}</option>`).join("")}</select></label>
+      <div class="friend-conversation">${conversation.map(message => `<article class="direct-message ${message.fromUserId === signedInAccount.id ? "sent" : ""}"><strong>${escapeHtml(message.fromUsername)}</strong><p>${escapeHtml(message.text)}</p>${message.campaignId ? `<a class="message-invite-link" href="/?campaignInvite=${encodeURIComponent(message.campaignId)}">Join ${escapeHtml(message.campaignName || "campaign")} →</a>` : ""}<small>${escapeHtml(new Date(message.createdAt).toLocaleString())}</small></article>`).join("") || `<div class="activity-copy">Start a conversation with ${escapeHtml(selectedFriend.username)}.</div>`}</div>
+      <form class="friend-message-form" id="friend-message-form"><label class="form-field"><span class="field-label">Message</span><textarea class="field-textarea" name="text" maxlength="2000" rows="2" required placeholder="Write a message…"></textarea></label><button class="button button-primary" type="submit">Send message</button></form>`;
+  }
+  const friendRows = friendData.friends.map(friend => `<div class="friend-list-row"><div><strong>${escapeHtml(friend.username)}</strong><small>Friend</small></div><button class="button button-quiet" type="button" data-action="open-friend-messages" data-id="${escapeHtml(friend.id)}">Message</button></div>`).join("");
+  const searchRows = friendSearchResults.map(user => {
+    const isFriend = friendData.friends.some(friend => friend.id === user.id);
+    const isOutgoing = friendData.requests.some(request => request.fromUserId === signedInAccount.id && request.toUserId === user.id);
+    const isIncoming = friendData.requests.find(request => request.fromUserId === user.id && request.toUserId === signedInAccount.id);
+    const button = isFriend
+      ? `<button class="button button-quiet" type="button" disabled>Friends</button>`
+      : isOutgoing
+        ? `<button class="button button-quiet" type="button" disabled>Request sent</button>`
+        : isIncoming
+          ? `<button class="button button-primary" type="button" data-action="accept-friend-request" data-id="${escapeHtml(isIncoming.id)}">Accept request</button>`
+          : `<button class="button button-quiet" type="button" data-action="send-friend-request" data-id="${escapeHtml(user.id)}">Add friend</button>`;
+    return `<div class="friend-list-row"><div><strong>${escapeHtml(user.username)}</strong><small>Afterdark user</small></div>${button}</div>`;
+  }).join("");
+  return `<form class="friend-search-form" id="friend-search-form"><label class="form-field"><span class="field-label">Find a user by username</span><input class="field-input" type="search" name="username" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" required placeholder="Enter exact username" value="${escapeHtml(friendSearchUsername)}"></label><button class="button button-primary" type="submit">Search</button></form>
+    ${friendSearchResults.length ? `<div class="friend-search-results">${searchRows}</div>` : friendSearchPerformed ? `<div class="activity-copy">No user found with that username.</div>` : ""}
+    <div class="friend-list">${friendRows || (!friendSearchResults.length && !friendSearchPerformed ? `<div class="activity-copy">Search for a username to send a friend request.</div>` : "")}</div>`;
 }
 
 function renderCharacters() {
@@ -617,37 +778,6 @@ function openCatalogSearch(characterId) {
   catalogDialog.querySelector("#catalog-search").focus();
 }
 
-function renderPlay() {
-  const selector = document.getElementById("play-character");
-  const previous = selector.value;
-  selector.innerHTML = workspace.characters.map(character => `<option value="${escapeHtml(character.id)}">${escapeHtml(character.name)}</option>`).join("");
-  const character = workspace.characters.find(item => item.id === previous) || workspace.characters[0];
-  if (!character) {
-    selector.disabled = true;
-    document.getElementById("play-content").innerHTML = emptyState("NO ACTIVE CHARACTER", "Bring someone to the table.", "Create a character first, then use play view to keep their essentials close.", "Create a character", "character");
-    return;
-  }
-  selector.disabled = false;
-  selector.value = character.id;
-  const attributes = ATTRIBUTES.map(attribute => `<div class="play-attribute"><span>${attribute}</span><strong>${escapeHtml(character.attributes?.[attribute] ?? "—")}</strong></div>`).join("");
-  const items = itemsForCharacter(character);
-  const naturalSkills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
-  const naturalSkillRows = naturalSkills.map(skill => `<div class="sheet-chip-skill-row"><span><strong>${escapeHtml(skill.name)}${skill.special ? " · Special" : ""}</strong><small>Natural skill</small></span><b>+${escapeHtml(skill.value)}</b></div>`).join("") || `<span class="field-hint">No natural skills recorded.</span>`;
-  const socketedChips = items.filter(item => item.socketed && item.chipSkill);
-  const chippedSkillRows = socketedChips.map(item => `<div class="sheet-chip-skill-row"><span><strong>${escapeHtml(item.chipSkill)}</strong><small>${escapeHtml(item.name)}</small></span><b>+${escapeHtml(item.chipBonus ?? 0)}</b></div>`).join("") || `<span class="field-hint">No skill chips are socketed.</span>`;
-  const skills = `<div class="skill-summary-grid"><section><h3>Natural skills</h3><div class="sheet-chip-skills">${naturalSkillRows}</div></section><section><h3>Chipped skills</h3><div class="sheet-chip-skills">${chippedSkillRows}</div></section></div>`;
-  const derived = (character.derived ?? []).length ? (character.derived ?? []).map(item => {
-    const [label, ...rest] = String(item).split(":");
-    return `<div class="derived-item"><span>${escapeHtml(label.trim())}</span><strong>${escapeHtml(rest.join(":").trim() || "—")}</strong></div>`;
-  }).join("") : `<span class="field-hint">Add your own derived values in the character editor.</span>`;
-  const gearList = items.length ? items.map(item => `<div class="activity-item"><span class="activity-mark ${item.category === "Cyberware" ? "" : "acid"}"></span><div class="activity-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category)} · QTY ${escapeHtml(item.quantity)} · ${escapeHtml(itemDetail(item))}</small></div></div>`).join("") : `<span class="field-hint">No items assigned to this character.</span>`;
-  document.getElementById("play-content").innerHTML = `<div class="play-banner"><div><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><p>Use this table-side view for the details you reach for most.</p></div><div class="play-banner-actions"><button class="button button-quiet" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">✎ Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></div>
-    <div class="section-grid play-grid">
-      <section><div class="play-attributes">${attributes}</div><div class="panel play-section"><div class="panel-head"><div><p class="section-kicker">QUICK REFERENCE</p><h2>Custom values</h2></div></div><div class="panel-body"><div class="derived-list">${derived}</div></div></div><div class="panel play-section"><div class="panel-head"><div><p class="section-kicker">ON HAND</p><h2>Gear &amp; cyberware</h2></div><button class="text-button" type="button" data-action="open-character-gear" data-id="${escapeHtml(character.id)}">Open inventory →</button></div><div class="panel-body"><div class="activity-list">${gearList}</div></div></div></section>
-      <section><div class="panel"><div class="panel-head"><div><p class="section-kicker">TRAINED IN</p><h2>Skills</h2></div></div><div class="panel-body">${skills}</div></div><div class="panel play-section"><div class="panel-head"><div><p class="section-kicker">THE BACKSTORY</p><h2>History</h2></div></div><div class="panel-body"><div class="note-box">${escapeHtml(character.history || "No history added.")}</div></div></div><div class="panel play-section"><div class="panel-head"><div><p class="section-kicker">TABLE NOTES</p><h2>Notes</h2></div></div><div class="panel-body"><div class="note-box">${escapeHtml(character.notes || "No notes added.")}</div></div></div></section>
-    </div>`;
-}
-
 function renderCharacterActions(character, inventory) {
   const equippedWeapons = inventory.filter(item => isWeaponItem(item) && item.equipped);
   const attackRows = equippedWeapons.length ? equippedWeapons.map((item, index) => {
@@ -732,10 +862,8 @@ function renderSheet() {
   const chippedSkillRows = socketedChips.map(item => `<div class="sheet-chip-skill-row"><span><strong>${escapeHtml(item.chipSkill)}</strong><small>${escapeHtml(item.name)}</small></span><b>+${escapeHtml(item.chipBonus ?? 0)}</b></div>`).join("") || `<span class="field-hint">No skill chips are socketed.</span>`;
   const bodyRows = BODY_LOCATIONS.map(({ key, label }) => {
     const health = character.bodyHealth?.[key] || {};
-    const current = health.current == null ? "—" : health.current;
-    const max = health.max == null ? "—" : health.max;
     const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
-    return `<tr><th scope="row">${escapeHtml(label)}</th><td>${escapeHtml(current)} / ${escapeHtml(max)}</td><td>${escapeHtml(armorSP)}</td></tr>`;
+    return `<tr><th scope="row">${escapeHtml(label)}</th><td><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></td><td><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></td><td>${escapeHtml(armorSP)}</td></tr>`;
   }).join("");
   const derived = (character.derived ?? []).map(item => {
     const [label, ...rest] = String(item).split(":");
@@ -744,9 +872,10 @@ function renderSheet() {
   const lastRoll = sheetRollResults[character.id] || "No rolls yet.";
   const equippedItems = inventory.filter(item => item.equipped);
   target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><span class="tag tag-cyan">${character.healthCurrent == null ? "LIFE NOT SET" : `${escapeHtml(character.healthCurrent)}${character.healthMax == null ? "" : ` / ${escapeHtml(character.healthMax)}`} LIFE`}</span></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
+    <section class="panel sheet-vitals-panel"><div class="panel-head"><div><p class="section-kicker">LIFE</p><h2>Character health</h2></div></div><div class="panel-body"><form class="sheet-vitals-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><label><span class="field-label">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-primary" type="submit">Save health</button></form></div></section>
     <section class="panel sheet-latest-roll"><div class="panel-head"><div><p class="section-kicker">LATEST ROLL</p><h2>Roll result</h2></div></div><div class="panel-body"><p id="sheet-overview-roll-result" class="sheet-roll-result" role="status" aria-live="polite">${escapeHtml(lastRoll)}</p></div></section>
     <div class="section-grid sheet-body-grid"><section class="panel"><div class="panel-head"><div><p class="section-kicker">CHARACTERISTICS</p><h2>Attributes</h2></div></div><div class="panel-body"><div class="card-attrs sheet-attributes">${attributes}</div></div></section><section class="panel"><div class="panel-head"><div><p class="section-kicker">SKILL BONUSES</p><h2>Skills</h2></div></div><div class="panel-body"><div class="skill-summary-grid"><section><h3>Natural skills</h3><div class="sheet-chip-skills">${naturalSkillRows}</div></section><section><h3>Chipped skills</h3><div class="sheet-chip-skills">${chippedSkillRows}</div></section></div><p class="field-hint">Socketed chips with the same skill add together for skill and weapon rolls.</p></div></section>
-    <section class="panel"><div class="panel-head"><div><p class="section-kicker">BODY STATUS</p><h2>Limb health &amp; armor</h2></div><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit values →</button></div><div class="panel-body"><div class="table-wrap"><table class="body-status-table"><thead><tr><th>LOCATION</th><th>HEALTH · CURRENT / MAX</th><th>ARMOR SP</th></tr></thead><tbody>${bodyRows}</tbody></table></div><p class="field-hint">Health and armor SP are manual values; no damage or armor rules are applied.</p></div></section>
+    <section class="panel"><div class="panel-head"><div><p class="section-kicker">BODY STATUS</p><h2>Limb health &amp; armor</h2></div></div><div class="panel-body"><form data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="table-wrap"><table class="body-status-table"><thead><tr><th>LOCATION</th><th>CURRENT</th><th>MAX</th><th>ARMOR SP</th></tr></thead><tbody>${bodyRows}</tbody></table></div><div class="sheet-vitals-submit"><button class="button button-primary" type="submit">Save limb health</button></div><p class="field-hint">Edit current limb health to track damage. Armor SP remains in Edit sheet.</p></form></div></section>
     ${renderCharacterActions(character, inventory)}
     <section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save eddies</button></form><p class="field-hint">Maximum balance: 999,999,999.</p></div></section>
     <section class="panel"><div class="panel-head"><div><p class="section-kicker">TABLE VALUES</p><h2>Custom derived values</h2></div></div><div class="panel-body"><div class="derived-list">${derived}</div></div></section>
@@ -928,7 +1057,7 @@ function renderBoard() {
     const canSeeStats = boardIsGm || ownCharacter;
     const canMove = boardIsGm || ownCharacter;
     const life = canSeeStats ? `<span class="piece-life">${escapeHtml(piece.health?.current ?? 0)}${piece.health?.max ? `/${escapeHtml(piece.health.max)}` : ""}</span>` : "";
-    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * 2} by ${piece.height * 2} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span><span class="piece-label">${escapeHtml(piece.name)}</span>${life}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
+    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * 2} by ${piece.height * 2} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `${piece.portraitUrl ? `<img class="piece-portrait" src="${escapeHtml(piece.portraitUrl)}" alt="">` : `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span>`}<span class="piece-label">${escapeHtml(piece.name)}</span>${life}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
   }).join("");
   renderBoardSide();
 }
@@ -963,7 +1092,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
       x: Math.min(position.x, BOARD_COLUMNS - 1), y: Math.min(position.y, BOARD_ROWS - 1),
       width: 1, height: 1, attributes: character.attributes || {},       gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
       health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 },
-      initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId
+      initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId, portraitUrl: character.portraitUrl || ""
     };
     boardState.tokens.push(token);
     selectedBoardTokenId = token.id;
@@ -1017,7 +1146,7 @@ function addCharacterToken(characterId) {
     x: Math.min(boardState.tokens.length % BOARD_COLUMNS, BOARD_COLUMNS - 1),
     y: Math.min(Math.floor(boardState.tokens.length / BOARD_COLUMNS) % BOARD_ROWS, BOARD_ROWS - 1),
     width: 1, height: 1, attributes: character.attributes || {}, gear: [...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)],
-    health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || ""
+    health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || "", portraitUrl: character.portraitUrl || ""
   };
   boardState.tokens.push(token);
   selectedBoardTokenId = token.id;
@@ -1405,9 +1534,9 @@ function openCharacterBoard(character) {
   openCampaignBoard(campaign, character.id);
 }
 
-function openJoinCampaignForm() {
+function openJoinCampaignForm(campaignId = "") {
   if (!signedInAccount) return openAuthForm("login");
-  const body = `${field("Campaign room code", "campaignId", "", { required: true, hint: "Ask the campaign host to share the room code from their campaign card." })}${field("Your table name", "playerName", workspace.playerName || signedInAccount.username, { required: true })}${field("Private GM key (optional)", "gmKey", "", { hint: "Only the GM should enter this. Players leave it blank." })}`;
+  const body = `${field("Campaign room code", "campaignId", campaignId, { required: true, hint: "Ask the campaign host to share the room code from their campaign card." })}${field("Your table name", "playerName", workspace.playerName || signedInAccount.username, { required: true })}${field("Private GM key (optional)", "gmKey", "", { hint: "Only the GM should enter this. Players leave it blank." })}`;
   dialogContent.innerHTML = formShell("Join a shared campaign", "Connect to a campaign room on the same running Afterdark server.", "join-form", body, "Join campaign");
   dialog.showModal();
   dialogContent.querySelector('[name="campaignId"]').focus();
@@ -1437,7 +1566,6 @@ function renderAll() {
   renderCharacters();
   renderCampaigns();
   renderSheet();
-  renderPlay();
   renderBoard();
   document.getElementById("character-count").textContent = workspace.characters.length;
   updateAccountControls();
@@ -1445,6 +1573,13 @@ function renderAll() {
 
 function showView(view) {
   if (!VIEWS[view]) return;
+  if (view === "sheet") {
+    const character = selectedCharacter(selectedSheetCharacterId) || workspace.characters[0];
+    if (character) {
+      selectedSheetCharacterId = character.id;
+      recordCharacterOpened(character.id);
+    }
+  }
   activeView = view;
   document.querySelectorAll(".view-panel").forEach(panel => {
     const active = panel.id === `view-${view}`;
@@ -1651,9 +1786,11 @@ function openCharacterForm(character) {
 
 function openCampaignForm(campaign) {
   const options = workspace.characters.map(character => `<option value="${escapeHtml(character.id)}" ${(campaign?.characterIds ?? []).includes(character.id) ? "selected" : ""}>${escapeHtml(character.name)}</option>`).join("");
+  const friendOptions = friendData.friends.map(friend => `<option value="${escapeHtml(friend.id)}">${escapeHtml(friend.username)}</option>`).join("");
   const body = `${field("Campaign name", "name", campaign?.name ?? "", { required: true })}${field("Game master / organizer", "gm", campaign?.gm ?? "")}
     ${field("Campaign notes", "description", campaign?.description ?? "", { full: true, textarea: true })}
-    <label class="form-field full"><span class="field-label">Linked characters</span><select class="field-select" name="characterIds" multiple size="${Math.max(3, Math.min(6, workspace.characters.length || 3))}" aria-describedby="campaign-character-hint">${options}</select><span class="field-hint" id="campaign-character-hint">Use Ctrl (Windows) or Command (Mac) to select multiple characters.</span></label>`;
+    <label class="form-field full"><span class="field-label">Linked characters</span><select class="field-select" name="characterIds" multiple size="${Math.max(3, Math.min(6, workspace.characters.length || 3))}" aria-describedby="campaign-character-hint">${options}</select><span class="field-hint" id="campaign-character-hint">Use Ctrl (Windows) or Command (Mac) to select multiple characters.</span></label>
+    ${!campaign && signedInAccount ? `<label class="form-field full"><span class="field-label">Invite a friend</span><select class="field-select" name="inviteFriendId"><option value="">Create without an invite</option>${friendOptions}</select><span class="field-hint">${friendOptions ? "The friend will receive a direct message with a link to join this campaign." : "Add a friend before creating the campaign to send an invite."}</span></label>` : ""}`;
   dialogContent.innerHTML = formShell(campaign ? "Edit campaign" : "Create a campaign", "Keep your crew and campaign notes together.", "campaign-form", body, campaign ? "Save campaign" : "Create campaign");
   if (campaign) dialogContent.querySelector("form").dataset.id = campaign.id;
   dialog.showModal();
@@ -1805,21 +1942,76 @@ async function saveCharacterEddies(form) {
   if (saveWorkspace()) showToast("Eddies updated.");
 }
 
-async function saveCharacterHealth(character, healthCurrent) {
-  if (!signedInAccount) return;
-  try {
-    const response = await apiRequest(`/api/characters/${encodeURIComponent(character.id)}`, {
-      method: "PUT",
-      body: JSON.stringify({ ...character, healthCurrent })
-    });
-    const savedCharacter = normalizeCharacter(response.character);
-    workspace.characters = workspace.characters.map(item => item.id === savedCharacter.id ? savedCharacter : item);
-    signedInAccount.characters = workspace.characters;
-    saveWorkspace();
-  } catch (error) {
-    console.error("Could not save character life.", error);
-    showToast(error.message || "Could not save character life.", true);
+async function persistCharacterVitals(character, changes, showSavedMessage = false) {
+  const updatedCharacter = normalizeCharacter({ ...character, ...changes });
+  if (updatedCharacter.healthCurrent != null && updatedCharacter.healthMax != null
+    && updatedCharacter.healthCurrent > updatedCharacter.healthMax) {
+    showToast("Current life cannot exceed maximum life.", true);
+    return false;
   }
+  if (BODY_LOCATIONS.some(({ key }) => {
+    const health = updatedCharacter.bodyHealth[key];
+    return health.current != null && health.max != null && health.current > health.max;
+  })) {
+    showToast("Current limb health cannot exceed its maximum.", true);
+    return false;
+  }
+  try {
+    let savedCharacter = updatedCharacter;
+    if (signedInAccount) {
+      const response = await apiRequest(`/api/characters/${encodeURIComponent(character.id)}`, {
+        method: "PUT",
+        body: JSON.stringify(updatedCharacter)
+      });
+      savedCharacter = normalizeCharacter(response.character);
+    }
+    workspace.characters = workspace.characters.map(item => item.id === savedCharacter.id ? savedCharacter : item);
+    if (signedInAccount) signedInAccount.characters = workspace.characters;
+    workspace.demo = false;
+    if (!saveWorkspace()) return false;
+    if (showSavedMessage) showToast("Character health saved.");
+    return true;
+  } catch (error) {
+    console.error("Could not save character health and limb status.", error);
+    showToast(error.message || "Could not save character health and limb status.", true);
+    return false;
+  }
+}
+
+async function saveSheetVitals(form) {
+  const character = selectedCharacter(form.dataset.characterId);
+  if (!character) return showToast("Choose a character before updating health.", true);
+  const data = new FormData(form);
+  const kind = form.dataset.vitalsKind;
+  const changes = {};
+  if (kind === "health") {
+    const healthCurrent = readOptionalFormInteger(data, "healthCurrent", 9999);
+    const healthMax = readOptionalFormInteger(data, "healthMax", 9999);
+    if (healthCurrent === undefined || healthMax === undefined) {
+      showToast("Life values must be whole numbers from 0 to 9,999.", true);
+      return;
+    }
+    changes.healthCurrent = healthCurrent;
+    changes.healthMax = healthMax;
+  } else if (kind === "body") {
+    const bodyHealth = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, {
+      current: readOptionalFormInteger(data, `body-${key}-current`, 9999),
+      max: readOptionalFormInteger(data, `body-${key}-max`, 9999)
+    }]));
+    if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined || bodyHealth[key].max === undefined)) {
+      showToast("Limb health values must be whole numbers from 0 to 9,999.", true);
+      return;
+    }
+    changes.bodyHealth = bodyHealth;
+  } else {
+    showToast("This health form could not be saved.", true);
+    return;
+  }
+  await persistCharacterVitals(character, changes, true);
+}
+
+async function saveCharacterHealth(character, healthCurrent) {
+  await persistCharacterVitals(character, { healthCurrent });
 }
 
 async function addCatalogItem(item) {
@@ -2031,6 +2223,7 @@ async function submitAccountForm(form) {
     await loadAuthenticatedData(response.account);
     dialog.close();
     showToast(`Signed in as ${response.account.username}.`);
+    continuePendingCampaignInvite();
   } catch (error) {
     showToast(error.message || "Could not sign in.", true);
   }
@@ -2182,6 +2375,7 @@ function persistForm(form) {
     if (!name) return showToast("A campaign needs a name.", true);
     const id = form.dataset.id || makeId();
     const previous = workspace.campaigns.find(campaign => campaign.id === id);
+    const inviteFriendId = previous ? "" : String(data.get("inviteFriendId") || "");
     const campaign = {
       id, name, gm: String(data.get("gm") ?? "").trim(), description: String(data.get("description") ?? "").trim(),
       characterIds: data.getAll("characterIds").map(String),
@@ -2191,6 +2385,7 @@ function persistForm(form) {
     else workspace.campaigns.push(campaign);
     addActivity(previous ? `${name} was updated` : `${name} was created`, "Campaign");
     finishSave(previous ? "Campaign saved." : "Campaign created.");
+    if (inviteFriendId) void sendCampaignInvite(campaign, inviteFriendId);
   } else if (formType === "gear-form") {
     if (!name) return showToast("An item needs a name.", true);
     const id = form.dataset.id || makeId();
@@ -2357,6 +2552,15 @@ async function toggleSkillChipSocketed(characterId, itemId) {
 function handleAction(button) {
   const action = button.dataset.action;
   const id = button.dataset.id;
+  if (action === "refresh-friends") void refreshFriends();
+  if (action === "send-friend-request") void sendFriendRequest(id);
+  if (action === "accept-friend-request") void updateFriendRequest(id, "accept");
+  if (action === "decline-friend-request") void updateFriendRequest(id, "decline");
+  if (action === "open-friend-messages") {
+    friendTab = "messages";
+    selectedMessageFriendId = id;
+    renderDashboard();
+  }
   if (action === "close-dialog") dialog.close();
   if (action === "open-auth") openAuthForm("login");
   if (action === "switch-auth-mode") openAuthForm(button.dataset.mode);
@@ -2477,15 +2681,6 @@ function handleAction(button) {
       showToast("Character deleted.");
     }).catch(error => showToast(error.message || "Could not delete the character.", true));
   }
-  if (action === "play-character") {
-    const character = selectedCharacter(id);
-    if (character) {
-      showView("play");
-      renderPlay();
-      document.getElementById("play-character").value = id;
-      renderPlay();
-    }
-  }
   if (action === "edit-campaign") openForm("campaign", id);
   if (action === "delete-campaign") {
     const campaign = workspace.campaigns.find(item => item.id === id);
@@ -2534,6 +2729,12 @@ function handleAction(button) {
 }
 
 document.addEventListener("click", event => {
+  const friendTabButton = event.target.closest("[data-friend-tab]");
+  if (friendTabButton) {
+    friendTab = friendTabButton.dataset.friendTab;
+    renderDashboard();
+    return;
+  }
   const nav = event.target.closest("[data-view]");
   if (nav) {
     showView(nav.dataset.view);
@@ -2582,6 +2783,26 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("submit", event => {
+  if (event.target.id === "friend-search-form") {
+    event.preventDefault();
+    void searchFriendUsers(event.target);
+    return;
+  }
+  if (event.target.id === "friend-message-form") {
+    event.preventDefault();
+    const form = event.target;
+    const friend = friendData.friends.find(item => item.id === selectedMessageFriendId);
+    const text = String(new FormData(form).get("text") || "").trim();
+    if (!friend || !text) return;
+    void sendDirectMessage(friend.id, text).then(() => showToast(`Message sent to ${friend.username}.`))
+      .catch(error => showToast(error.message || "Could not send your message.", true));
+    return;
+  }
+  if (event.target.matches("[data-character-vitals-form]")) {
+    event.preventDefault();
+    void saveSheetVitals(event.target);
+    return;
+  }
   if (event.target.matches("[data-eddies-form]")) {
     event.preventDefault();
     void saveCharacterEddies(event.target);
@@ -2593,11 +2814,17 @@ document.addEventListener("submit", event => {
   }
 });
 
-document.getElementById("play-character").addEventListener("change", renderPlay);
 document.getElementById("sheet-character").addEventListener("change", event => {
   selectedSheetCharacterId = event.target.value;
   sheetTab = "overview";
-  renderSheet();
+  recordCharacterOpened(selectedSheetCharacterId);
+});
+document.addEventListener("change", event => {
+  const conversation = event.target.closest("[data-friend-conversation]");
+  if (conversation) {
+    selectedMessageFriendId = conversation.value;
+    renderDashboard();
+  }
 });
 document.getElementById("board-connect").addEventListener("click", () => connectToCampaign(
   activeBoardCampaignId,
