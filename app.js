@@ -443,7 +443,7 @@ async function sendCampaignInvite(campaign, friendId) {
   try {
     await ensureCampaignRoom(campaign);
     await sendDirectMessage(friendId, `I'd like you to join "${campaign.name}".`, campaign.id);
-    showToast(`Campaign invite sent to ${friend.username}.`);
+    showToast(`Campaign invite sent to ${friend.username}. Your account is the game master.`);
   } catch (error) {
     showToast(error.message || "Could not send the campaign invite.", true);
   }
@@ -920,14 +920,14 @@ function renderPalette() {
       target.innerHTML = `<p class="palette-intro">Campaign characters shared by players. Drag one onto the board or use Add.</p>${campaignRoster.map((character, index) => {
         const placed = boardState.tokens.some(token => token.characterId === character.id);
         return `<button class="palette-card party-card" type="button" ${placed ? "disabled" : "draggable=\"true\""} data-palette-kind="character" data-palette-index="${index}" aria-label="${placed ? "Already on board: " : "Drag or add "}${escapeHtml(character.name)}"><span class="enemy-avatar">${character.portraitUrl ? `<img src="${escapeHtml(character.portraitUrl)}" alt="">` : escapeHtml(initials(character.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.ownerName || "Player")} · LIFE ${escapeHtml(character.healthCurrent ?? "—")}</small></span><span class="palette-add">${placed ? "✓" : "＋"}</span></button>`;
-      }).join("") || `<div class="board-empty-inline">No characters are linked yet. Players can share their characters from this tab.</div>`}<p class="field-hint">Only the GM can place or move characters for other players.</p>`;
+      }).join("") || `<div class="board-empty-inline">No characters are linked yet. Players can share their characters from this tab.</div>`}<p class="field-hint">Only the GM can place characters. Players can move their own character tokens, and the GM can move any token.</p>`;
     } else {
       const linked = new Set(campaignRoster.map(character => character.id));
       const ownCharacters = workspace.characters.map(character => {
         const alreadyLinked = linked.has(character.id);
         return `<div class="palette-card party-card"><span class="enemy-avatar">${character.portraitUrl ? `<img src="${escapeHtml(character.portraitUrl)}" alt="">` : escapeHtml(initials(character.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.role || "Character")}</small></span><button class="palette-add" type="button" data-action="link-character-room" data-id="${escapeHtml(character.id)}" ${alreadyLinked ? "disabled" : ""} aria-label="${alreadyLinked ? "Already shared" : `Share ${escapeHtml(character.name)} with the GM`}">${alreadyLinked ? "✓" : "＋"}</button></div>`;
       }).join("");
-      target.innerHTML = `<p class="palette-intro">Share a character with the GM, who can place linked characters onto the board.</p>${ownCharacters || `<div class="board-empty-inline">Create a character before joining the table.</div>`}<p class="field-hint">${campaignPlayerCount}/${MAX_CAMPAIGN_PLAYERS} player accounts in the room.</p>`;
+      target.innerHTML = `<p class="palette-intro">Share a character with the GM, who can place linked characters onto the board. You can move your own character token.</p>${ownCharacters || `<div class="board-empty-inline">Create a character before joining the table.</div>`}<p class="field-hint">${campaignPlayerCount}/${MAX_CAMPAIGN_PLAYERS} player accounts in the room.</p>`;
     }
     return;
   }
@@ -1337,21 +1337,32 @@ async function copyGmKey() {
   }
 }
 
+const campaignRoomSetups = new Map();
+
 async function ensureCampaignRoom(campaign) {
   if (!signedInAccount) throw new Error("Sign in before creating a campaign room.");
   if (campaign.isJoined) return "";
-  let gmKey = storedGmKey(campaign.id);
-  if (!gmKey) {
-    let room = await apiRequest(`/api/campaigns/${encodeURIComponent(campaign.id)}`, {
-      method: "POST", body: JSON.stringify({ name: campaign.name })
-    });
-    if (!room.gmKey) room = await apiRequest(`/api/campaigns/${encodeURIComponent(campaign.id)}/host`, {
-      method: "POST", body: JSON.stringify({ name: campaign.name })
-    });
-    gmKey = room.gmKey;
-    if (gmKey) storeGmKey(campaign.id, gmKey);
+  if (campaignRoomSetups.has(campaign.id)) return campaignRoomSetups.get(campaign.id);
+  const setup = (async () => {
+    let gmKey = storedGmKey(campaign.id);
+    if (!gmKey) {
+      let room = await apiRequest(`/api/campaigns/${encodeURIComponent(campaign.id)}`, {
+        method: "POST", body: JSON.stringify({ name: campaign.name })
+      });
+      if (!room.gmKey) room = await apiRequest(`/api/campaigns/${encodeURIComponent(campaign.id)}/host`, {
+        method: "POST", body: JSON.stringify({ name: campaign.name })
+      });
+      gmKey = room.gmKey;
+      if (gmKey) storeGmKey(campaign.id, gmKey);
+    }
+    return gmKey;
+  })();
+  campaignRoomSetups.set(campaign.id, setup);
+  try {
+    return await setup;
+  } finally {
+    if (campaignRoomSetups.get(campaign.id) === setup) campaignRoomSetups.delete(campaign.id);
   }
-  return gmKey;
 }
 
 function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
@@ -1787,7 +1798,10 @@ function openCharacterForm(character) {
 function openCampaignForm(campaign) {
   const options = workspace.characters.map(character => `<option value="${escapeHtml(character.id)}" ${(campaign?.characterIds ?? []).includes(character.id) ? "selected" : ""}>${escapeHtml(character.name)}</option>`).join("");
   const friendOptions = friendData.friends.map(friend => `<option value="${escapeHtml(friend.id)}">${escapeHtml(friend.username)}</option>`).join("");
-  const body = `${field("Campaign name", "name", campaign?.name ?? "", { required: true })}${field("Game master / organizer", "gm", campaign?.gm ?? "")}
+  const gameMasterField = signedInAccount && !campaign?.isJoined
+    ? `<label class="form-field"><span class="field-label">Game master</span><input class="field-input" type="text" value="${escapeHtml(campaign?.gm || signedInAccount.username)}" readonly><span class="field-hint">The account that creates this campaign is its game master.</span></label>`
+    : field("Game master / organizer", "gm", campaign?.gm ?? "");
+  const body = `${field("Campaign name", "name", campaign?.name ?? "", { required: true })}${gameMasterField}
     ${field("Campaign notes", "description", campaign?.description ?? "", { full: true, textarea: true })}
     <label class="form-field full"><span class="field-label">Linked characters</span><select class="field-select" name="characterIds" multiple size="${Math.max(3, Math.min(6, workspace.characters.length || 3))}" aria-describedby="campaign-character-hint">${options}</select><span class="field-hint" id="campaign-character-hint">Use Ctrl (Windows) or Command (Mac) to select multiple characters.</span></label>
     ${!campaign && signedInAccount ? `<label class="form-field full"><span class="field-label">Invite a friend</span><select class="field-select" name="inviteFriendId"><option value="">Create without an invite</option>${friendOptions}</select><span class="field-hint">${friendOptions ? "The friend will receive a direct message with a link to join this campaign." : "Add a friend before creating the campaign to send an invite."}</span></label>` : ""}`;
@@ -2377,15 +2391,20 @@ function persistForm(form) {
     const previous = workspace.campaigns.find(campaign => campaign.id === id);
     const inviteFriendId = previous ? "" : String(data.get("inviteFriendId") || "");
     const campaign = {
-      id, name, gm: String(data.get("gm") ?? "").trim(), description: String(data.get("description") ?? "").trim(),
+      id, name, gm: previous?.gm || (previous?.isJoined ? "" : signedInAccount?.username) || String(data.get("gm") ?? "").trim(), description: String(data.get("description") ?? "").trim(),
       characterIds: data.getAll("characterIds").map(String),
       sessions: previous?.sessions ?? []
     };
     if (previous) workspace.campaigns = workspace.campaigns.map(item => item.id === id ? campaign : item);
     else workspace.campaigns.push(campaign);
     addActivity(previous ? `${name} was updated` : `${name} was created`, "Campaign");
-    finishSave(previous ? "Campaign saved." : "Campaign created.");
+    if (!finishSave(previous ? "Campaign saved." : signedInAccount ? "Campaign created; setting up game master access." : "Campaign created.")) return;
     if (inviteFriendId) void sendCampaignInvite(campaign, inviteFriendId);
+    else if (!previous && signedInAccount) {
+      void ensureCampaignRoom(campaign)
+        .then(() => showToast("Campaign ready. You are its game master."))
+        .catch(error => showToast(`Campaign was created, but game master setup failed: ${error.message || "unknown error"}`, true));
+    }
   } else if (formType === "gear-form") {
     if (!name) return showToast("An item needs a name.", true);
     const id = form.dataset.id || makeId();
@@ -2481,6 +2500,7 @@ function finishSave(message) {
     dialog.close();
     showToast(message);
   }
+  return saved;
 }
 
 function confirmAction(message) {

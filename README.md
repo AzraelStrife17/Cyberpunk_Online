@@ -26,9 +26,9 @@ $env:HOST = "0.0.0.0"
 npm start
 ```
 
-Players on the same trusted network open `http://<host-computer-ip>:8000`, create their own accounts, then use **Join shared campaign** and enter the room code supplied by the campaign host. A campaign card's **Invite** button copies its room code. The host should share the separate private GM key only with the game master; the host can copy it from the board controls.
+Players on the same trusted network open `http://<host-computer-ip>:8000`, create their own accounts, then use **Join shared campaign** and enter the room code supplied by the campaign creator. The account that creates a campaign automatically becomes its game master, and the shared room is initialized when the campaign is created. A campaign card's **Invite** button copies its room code. The creator should open the board while signed in to that account; players leave the optional GM key blank.
 
-Players can share their own characters with the campaign roster. A campaign supports up to 10 player accounts, excluding the host. The server enforces GM-only terrain and enemy placement and allows players to move only their own character tokens. Character-sheet rolls work without a campaign; when a character is linked to the active campaign, the roll is also posted to the board feed. The GM can make board-side rolls. Players see their own board stats, while the GM can see all board stats; other players' character and enemy stats are withheld.
+Players can share their own characters with the campaign roster. The GM controls adding linked player characters to the board. Players can move their own character tokens, and the GM can move any character token. The server enforces GM-only terrain and enemy placement. A campaign supports up to 10 player accounts, excluding the creator. Character-sheet rolls work without a campaign; when a character is linked to the active campaign, the roll is also posted to the board feed. The GM can make board-side rolls. Players see their own board stats, while the GM can see all board stats; other players' character and enemy stats are withheld.
 
 The server uses account authentication, but this app does not provide HTTPS/TLS or production-grade account recovery. Use it only on a trusted local network; do not expose it directly to the public internet.
 
