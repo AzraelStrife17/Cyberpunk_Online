@@ -1,3 +1,5 @@
+import { isWeaponActionItem, parseDamageFormula, weaponCombatData } from "./weapon-actions.js";
+
 const STORAGE_KEY = "afterdark-workspace-v1";
 const ATTRIBUTES = ["INT", "REF", "TECH", "COOL", "ATTR", "LUCK", "MA", "BODY", "EMP"];
 const CINEMATIC_ATTRIBUTE_TIERS = [
@@ -209,7 +211,6 @@ function demoWorkspace() {
         id: renId, name: "Ren Kaito", role: "Solo", handle: "Kestrel",
         attributes: { INT: 7, REF: 8, TECH: 5, COOL: 6, ATTR: 5, LUCK: 6, MA: 7, BODY: 6, EMP: 5 },
         skills: [{ name: "Awareness", value: 5 }, { name: "Handgun", value: 6 }, { name: "Stealth", value: 4 }, { name: "First Aid", value: 3 }, { name: "Streetwise", value: 4 }],
-        derived: ["Initiative: 8", "Wounds: 24", "Humanity: 50"],
         healthCurrent: 18, healthMax: 24, eddies: 1200,
         history: "Former corporate security. The job ended; the debts did not.",
         notes: "Keep one eye on the exits. Never take a second meeting at the same place.",
@@ -219,7 +220,6 @@ function demoWorkspace() {
         id: ivyId, name: "Ivy Vex", role: "Techie", handle: "Patch",
         attributes: { INT: 8, REF: 6, TECH: 9, COOL: 6, ATTR: 4, LUCK: 5, MA: 5, BODY: 5, EMP: 7 },
         skills: [{ name: "Electronics", value: 7 }, { name: "Cybertech", value: 6 }, { name: "Basic Tech", value: 7 }, { name: "Education", value: 5 }, { name: "Bargain", value: 3 }],
-        derived: ["Initiative: 6", "Wounds: 20", "Humanity: 70"],
         healthCurrent: 20, healthMax: 20, eddies: 850,
         history: "Neighborhood tech who can make old machines sing.",
         notes: "Has a contact in the southside repair market.",
@@ -309,8 +309,7 @@ let activeGmKey = "";
 let boardState = { tokens: [], terrain: [] };
 let roomEvents = [];
 let enemyTemplates = [];
-let sheetRollResults = {};
-let sheetRollHistory = {};
+let sheetActionHistory = {};
 let activeSocket = null;
 let selectedBoardTokenId = "";
 let selectedBoardPieceId = "";
@@ -590,7 +589,20 @@ function itemsForCharacter(character) {
   for (const item of workspace.gear.filter(entry => entry.characterId === character?.id)) {
     if (!items.some(existing => existing.id === item.id)) items.push(item);
   }
-  return items;
+  return items.map(item => {
+    if (String(item.category || "").toLowerCase() !== "cyberware") return item;
+    const catalogItem = (workspace.catalog || []).find(entry => item.catalogId && entry.id === item.catalogId)
+      || (workspace.catalog || []).find(entry =>
+        entry.name.toLowerCase() === String(item.name || "").toLowerCase()
+        && entry.category.toLowerCase() === String(item.category || "").toLowerCase()
+      );
+    if (!catalogItem) return item;
+    return {
+      ...item,
+      weaponType: item.weaponType || catalogItem.weaponType || "",
+      weaponStats: item.weaponStats || catalogItem.weaponStats || ""
+    };
+  });
 }
 
 function skillChipBonusFor(character, skillName) {
@@ -623,29 +635,6 @@ function attributeForSkill(skillName) {
     streetdeal: "COOL"
   };
   return specialSkillAttributes[normalizedName] || "INT";
-}
-
-function isWeaponItem(item) {
-  return String(item?.category || "").toLowerCase() === "weapon";
-}
-
-function weaponCombatData(item) {
-  const stats = String(item.weaponStats || item.description || item.details || "");
-  const damageAndAmmo = stats.match(/damage(?:\/ammo)?:\s*([^;]+)/i)?.[1] || stats;
-  const damageFormula = damageAndAmmo.match(/\b\d+\s*d\s*\d+(?:\s*[+-]\s*\d+)?/i)?.[0].replace(/\s+/g, "").toUpperCase() || "—";
-  const ammoType = damageAndAmmo.match(/\(([^)]+)\)/)?.[1]?.trim() || "—";
-  const capacity = Number(stats.match(/\bshots:\s*(\d+)/i)?.[1]) || 0;
-  const rateOfFire = Number(stats.match(/\brof:\s*(\d+)/i)?.[1]) || 0;
-  return { damageFormula, ammoType, capacity, rateOfFire };
-}
-
-function hasCyberwareWeaponFeature(item) {
-  if (String(item?.category || "").toLowerCase() !== "cyberware") return false;
-  return Boolean(String(item.weaponType || "").trim() || parseDamageFormula(weaponCombatData(item).damageFormula));
-}
-
-function isWeaponActionItem(item) {
-  return isWeaponItem(item) || hasCyberwareWeaponFeature(item);
 }
 
 function inventoryItemsForTab(inventory, tab) {
@@ -688,38 +677,40 @@ function rollD10() {
   return rollDie(10);
 }
 
-function parseDamageFormula(formula) {
-  const match = /^(\d+)D(\d+)(?:([+-])(\d+))?$/i.exec(String(formula || "").trim());
-  if (!match) return null;
-  const count = Number(match[1]);
-  const sides = Number(match[2]);
-  const modifier = Number(match[4] || 0) * (match[3] === "-" ? -1 : 1);
-  if (!Number.isInteger(count) || count < 1 || count > 100 || !Number.isInteger(sides) || sides < 2 || sides > 1000 || Math.abs(modifier) > 999) return null;
-  return { count, sides, modifier };
-}
-
 function publishCharacterRoll(character, event) {
   if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || connectionStatus !== "LIVE") return;
   if (!campaignRoster.some(entry => entry.id === character.id)) return;
   sendRoomEvent({ ...event, source: "sheet", kind: "roll", characterId: character.id, characterName: character.name });
 }
 
-function rememberSheetRoll(character, result) {
-  sheetRollResults[character.id] = result;
-  sheetRollHistory[character.id] = [result, ...(sheetRollHistory[character.id] || [])].slice(0, 8);
+function rememberSheetAction(character, result) {
+  sheetActionHistory[character.id] = [result, ...(sheetActionHistory[character.id] || [])].slice(0, 8);
   for (const id of ["sheet-roll-result", "sheet-overview-roll-result"]) {
     const output = document.getElementById(id);
     if (output) output.textContent = result;
   }
   const recentActions = document.getElementById("sheet-recent-actions");
-  if (recentActions) recentActions.innerHTML = renderRecentSheetActions(character);
+  if (recentActions && document.getElementById("sheet-character")?.value === character.id) {
+    recentActions.innerHTML = renderRecentSheetActions(character);
+  }
 }
 
 function renderRecentSheetActions(character) {
-  const history = sheetRollHistory[character.id] || [];
+  const history = sheetActionHistory[character.id] || [];
   return history.length
     ? `<div class="sheet-recent-action-list">${history.map((result, index) => `<p class="sheet-recent-action ${index ? "" : "current"}">${escapeHtml(result)}</p>`).join("")}</div>`
-    : `<p class="field-hint">Your recent attribute, skill, and weapon rolls will appear here.</p>`;
+    : `<p class="field-hint">Recent rolls and finalized health changes will appear here.</p>`;
+}
+
+function recordCharacterHealthChange(previousCharacter, updatedCharacter) {
+  if (previousCharacter?.healthCurrent == null || updatedCharacter.healthCurrent == null) return;
+  const delta = Number(updatedCharacter.healthCurrent) - Number(previousCharacter.healthCurrent);
+  if (!Number.isFinite(delta) || delta === 0) return;
+  const sign = delta > 0 ? "+" : "";
+  const current = updatedCharacter.healthMax == null
+    ? ` (${updatedCharacter.healthCurrent})`
+    : ` (${updatedCharacter.healthCurrent}/${updatedCharacter.healthMax})`;
+  rememberSheetAction(updatedCharacter, `${updatedCharacter.name}: ${sign}${delta} Health${current}.`);
 }
 
 function initials(name = "?") {
@@ -748,7 +739,7 @@ function characterCard(character) {
       </div>
     </div>
     <div class="card-attrs">${attrCells}</div>
-    <div class="card-bottom"><small>${(character.skills ?? []).length} skills · ${(character.derived ?? []).length} custom values</small><span class="tag tag-neutral">${escapeHtml(character.role || "UNASSIGNED")}</span></div>
+    <div class="card-bottom"><small>${(character.skills ?? []).length} skills</small><span class="tag tag-neutral">${escapeHtml(character.role || "UNASSIGNED")}</span></div>
   </article>`;
 }
 
@@ -971,10 +962,15 @@ function renderInventoryPanel(character, inventory) {
 
 function renderCharacterActions(character, inventory) {
   const equippedWeapons = inventory.filter(item => item.equipped && isWeaponActionItem(item));
+  const ref = Number(character.attributes?.REF || 0);
+  const initiativeRow = `<article class="sheet-attack-action sheet-initiative-action">
+    <div class="sheet-attack-title"><strong>Initiative Roll</strong><small>1d10 + REF + modifier</small></div>
+    <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-initiative-roll" data-character-id="${escapeHtml(character.id)}" aria-label="Roll initiative for ${escapeHtml(character.name)}">Roll initiative</button></div>
+    <span class="sheet-attack-bonus">REF ${ref} + modifier</span><span class="sheet-attack-damage">INIT</span>
+  </article>`;
   const attackRows = equippedWeapons.length ? equippedWeapons.map((item, index) => {
     const combat = weaponCombatData(item);
     const skill = weaponSkillFor(character, item);
-    const ref = Number(character.attributes?.REF || 0);
     const bonus = ref + skill.value;
     const maximumRounds = combat.rateOfFire || combat.capacity || 1;
     const damageButton = parseDamageFormula(combat.damageFormula)
@@ -986,10 +982,9 @@ function renderCharacterActions(character, inventory) {
       <span class="sheet-attack-bonus">${escapeHtml(skill.name)} ${escapeHtml(skill.value)} + REF ${ref}</span><span class="sheet-attack-damage">DMG ${damageButton}</span>
     </article>`;
   }).join("") : `<div class="board-empty-inline">Equip a weapon or weapon-capable cyberware in the inventory to add an attack here.</div>`;
-  return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Attacks &amp; checks</h2></div></div><div class="panel-body">
+  return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Attacks, checks &amp; initiative</h2></div></div><div class="panel-body">
     <div class="sheet-roll-settings"><label><span>Target</span><input class="input-control" id="sheet-roll-target" type="number" value="${escapeHtml(sheetRollTarget)}"></label><label><span>Modifier</span><input class="input-control" id="sheet-roll-modifier" type="number" value="${escapeHtml(sheetRollModifier)}"></label></div>
-    <div class="sheet-attack-list">${attackRows}</div><p class="field-hint">Click an attribute or skill to roll against the target above. The GM confirms hits; damage is never applied automatically.</p>
-    <h3 class="sheet-recent-heading">Recent actions</h3><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div>
+    <div class="sheet-attack-list">${initiativeRow}${attackRows}</div><p class="field-hint">Initiative rolls use REF + 1d10 and the modifier above. The GM confirms hits; damage is never applied automatically.</p>
   </div></section>`;
 }
 
@@ -1079,25 +1074,25 @@ function renderSheet() {
     const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
     return `<div class="body-status-cell"><div class="body-status-cell-heading"><strong>${escapeHtml(label)}</strong><span>SP ${escapeHtml(armorSP)}</span></div><div class="body-health-values"><label><span>Current</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></label><label><span>Max</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></label></div></div>`;
   }).join("");
-  const derived = (character.derived ?? []).map(item => {
-    const [label, ...rest] = String(item).split(":");
-    return `<div class="derived-item"><span>${escapeHtml(label.trim())}</span><strong>${escapeHtml(rest.join(":").trim() || "—")}</strong></div>`;
-  }).join("") || `<span class="field-hint">No custom values.</span>`;
   target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
     <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
     <div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
-    <div class="sheet-bottom-grid"><section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save</button></form></div></section><section class="panel"><div class="panel-head"><div><p class="section-kicker">TABLE VALUES</p><h2>Custom derived values</h2></div></div><div class="panel-body"><div class="derived-list">${derived}</div></div></section></div>`;
+    <div class="sheet-bottom-grid"><section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save</button></form></div></section></div>
+    <section class="panel sheet-recent-actions-panel"><div class="panel-head"><h2>Recent actions</h2></div><div class="panel-body"><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div></div></section>`;
 }
 
 function roomEventText(event) {
   if (event.kind === "roll") {
     const isAttack = event.rollKind === "attack";
-    const type = isAttack ? "hit check" : "skill check";
+    const isInitiative = event.rollKind === "initiative";
+    const type = isAttack ? "hit check" : isInitiative ? "initiative roll" : "skill check";
     const descriptor = isAttack && event.weapon
       ? ` with ${event.weapon}`
       : event.skill ? ` using ${event.skill}` : ` using ${event.attribute} attribute`;
     const formula = event.privateStats
       ? `d10 ${escapeHtml(event.die)} + private bonus = <strong>${escapeHtml(event.total)}</strong>`
+      : isInitiative
+        ? `d10 ${escapeHtml(event.die)} + REF ${escapeHtml(event.base)} + mod ${escapeHtml(event.modifier)} = <strong>${escapeHtml(event.total)}</strong>`
       : `d10 ${escapeHtml(event.die)} + ${escapeHtml(event.attribute)} ${escapeHtml(event.base)} + skill ${escapeHtml(event.skillValue)} + mod ${escapeHtml(event.modifier)} = <strong>${escapeHtml(event.total)}</strong>`;
     const target = event.target > 0
       ? ` vs ${escapeHtml(event.target)} <span class="tag ${event.success ? "tag-cyan" : "tag-neutral"}">${event.success ? "SUCCESS" : "MISS"}</span>`
@@ -1421,9 +1416,25 @@ function performSheetAttributeRoll(characterId, attribute) {
   const die = rollD10();
   const total = die + base + modifier;
   const result = `${attribute} check: d10 ${die} + ${attribute} ${base} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
-  rememberSheetRoll(character, result);
+  rememberSheetAction(character, result);
   publishCharacterRoll(character, {
     rollKind: "skill", skill: "", attribute, die, base, skillValue: 0, modifier, total, target, success: total >= target
+  });
+}
+
+function performSheetInitiativeRoll(characterId) {
+  const character = selectedCharacter(characterId);
+  if (!character) return showToast("Choose a character before rolling initiative.", true);
+  const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
+  if (!Number.isFinite(modifier)) return showToast("Enter a valid modifier.", true);
+  const base = Number(character.attributes?.REF || 0);
+  const die = rollD10();
+  const total = die + base + modifier;
+  const result = `Initiative roll: d10 ${die} + REF ${base} + modifier ${modifier} = ${total}.`;
+  rememberSheetAction(character, result);
+  publishCharacterRoll(character, {
+    rollKind: "initiative", skill: "Initiative", attribute: "REF", die, base,
+    skillValue: 0, modifier, total, target: 0, success: false
   });
 }
 
@@ -1446,7 +1457,7 @@ function performSheetSkillRoll(characterId, requestedSkill = "", requestedAttrib
   const total = die + base + skillValue + modifier;
   const skillBreakdown = chipBonus ? `${naturalSkillValue} natural + ${chipBonus} chip = ${skillValue}` : `${skillValue}`;
   const result = `${skillName} check: d10 ${die} + ${attribute} ${base} + skill ${skillBreakdown} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
-  rememberSheetRoll(character, result);
+  rememberSheetAction(character, result);
   publishCharacterRoll(character, {
     rollKind: "skill", skill: skillName, attribute, die, base, skillValue, modifier, total, target, success: total >= target
   });
@@ -1472,7 +1483,7 @@ function performSheetAttackRoll(button) {
   const total = die + bonus;
   const skillBreakdown = skill.chipBonus ? `${skill.naturalValue} natural + ${skill.chipBonus} chip = ${skill.value}` : `${skill.value}`;
   const result = `Hit roll with ${item.name}: d10 ${die} + ${skill.name} ${skillBreakdown} + REF ${base} = ${total}. The GM confirms whether it hits; damage is handled by the character who is hit.`;
-  rememberSheetRoll(character, result);
+  rememberSheetAction(character, result);
   publishCharacterRoll(character, {
     rollKind: "attack", skill: skill.name, attribute: "REF", base, skillValue: skill.value, modifier: 0,
     die, total, target: 0, success: false, weapon: item.name, ammoType: combat.ammoType,
@@ -1492,7 +1503,7 @@ function performSheetDamageRoll(button) {
   const dice = Array.from({ length: parsed.count }, () => rollDie(parsed.sides));
   const total = dice.reduce((sum, result) => sum + result, parsed.modifier);
   const modifier = parsed.modifier ? ` ${parsed.modifier > 0 ? "+" : "−"} ${Math.abs(parsed.modifier)}` : "";
-  rememberSheetRoll(character, `Damage roll with ${item.name}: ${parsed.count}d${parsed.sides} [${dice.join(", ")}]${modifier} = ${total}.`);
+  rememberSheetAction(character, `Damage roll with ${item.name}: ${parsed.count}d${parsed.sides} [${dice.join(", ")}]${modifier} = ${total}.`);
 }
 
 function performRoll(rollKind) {
@@ -2007,7 +2018,6 @@ function openCharacterForm(character) {
     ${field("Current life", "healthCurrent", character?.healthCurrent ?? "", { type: "number", min: 0 })}
     ${field("Maximum life", "healthMax", character?.healthMax ?? "", { type: "number", min: 0, hint: "Leave blank if your table does not track a maximum." })}
     <label class="form-field full"><span class="field-label">Portrait</span><input class="field-input" type="file" name="portrait" accept="image/jpeg,image/png,image/webp"><span class="field-hint">Optional JPEG, PNG, or WebP image up to 2 MB. Stored on this app server.</span></label>
-    ${field("Custom derived values", "derived", (character?.derived ?? []).join("\\n"), { full: true, textarea: true, hint: "One per line, such as Initiative: 8. Values are user-defined, not rule calculations." })}
     ${field("History", "history", character?.history ?? "", { full: true, textarea: true })}
     ${field("Notes", "notes", character?.notes ?? "", { full: true, textarea: true })}`;
   dialogContent.innerHTML = formShell(character ? "Edit character" : "Create a character", character ? "Build a sheet with the details that matter at your table." : "Roll 9d10 or choose a cinematic pool; allocate every point, with a maximum of 10 per attribute.", "character-form", body, character ? "Save character" : "Create character");
@@ -2150,6 +2160,7 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
     addActivity(previous ? `${savedCharacter.name}'s sheet was updated` : `${savedCharacter.name} joined the roster`, previous ? "Character updated" : "Character added");
     const locallySaved = saveWorkspace();
     if (!locallySaved) renderAll();
+    if (previous) recordCharacterHealthChange(previous, savedCharacter);
     dialog.close();
     updateAccountControls();
     if (showSavedMessage) {
@@ -2239,6 +2250,7 @@ async function persistCharacterVitals(character, changes, showSavedMessage = fal
     if (signedInAccount) signedInAccount.characters = workspace.characters;
     workspace.demo = false;
     if (!saveWorkspace()) return false;
+    recordCharacterHealthChange(character, savedCharacter);
     if (showSavedMessage) showToast("Character health saved.");
     return true;
   } catch (error) {
@@ -2636,7 +2648,6 @@ function persistForm(form) {
       bodyHealth, bodyArmorSP,
       ...(attributeGeneration ? { attributeGeneration } : {}),
       ...(skillGeneration ? { skillGeneration } : {}),
-      derived: String(data.get("derived") ?? "").split(/\r?\n/).map(item => item.trim()).filter(Boolean),
       healthCurrent: data.get("healthCurrent") === "" ? null : Number(data.get("healthCurrent")),
       healthMax: data.get("healthMax") === "" ? null : Number(data.get("healthMax")),
       history: String(data.get("history") ?? "").trim(), notes: String(data.get("notes") ?? "").trim(),
@@ -2852,7 +2863,7 @@ async function completeCyberwareInstallation(form) {
   }
   const detail = result.rolled ? `${result.detail}; ` : "";
   const rollSummary = `${item.name} installed: ${detail}-${result.amount} Humanity (${humanity} remaining).`;
-  rememberSheetRoll(character, rollSummary);
+  rememberSheetAction(character, rollSummary);
   dialog.close();
   renderSheet();
   showToast(`${item.name} installed; ${result.amount} Humanity lost.`);
@@ -2972,6 +2983,7 @@ function handleAction(button) {
   if (action === "toggle-socketed") void toggleSkillChipSocketed(button.dataset.characterId, id);
   if (action === "sheet-skill-roll") performSheetSkillRoll(button.dataset.characterId, button.dataset.skillName, button.dataset.attribute);
   if (action === "sheet-attribute-roll") performSheetAttributeRoll(button.dataset.characterId, button.dataset.attribute);
+  if (action === "sheet-initiative-roll") performSheetInitiativeRoll(button.dataset.characterId);
   if (action === "sheet-attack-roll") performSheetAttackRoll(button);
   if (action === "sheet-damage-roll") performSheetDamageRoll(button);
   if (action === "add-catalog-item") {

@@ -218,7 +218,8 @@ function sanitizeCharacter(input, existing = {}) {
       || input.skills.some(skill => !skill || typeof skill !== "object"
         || !Number.isInteger(Number(skill.value)) || Number(skill.value) < 1 || Number(skill.value) > 40
         || typeof skill.special !== "boolean"))) return null;
-  const derived = Array.isArray(input.derived) ? input.derived.slice(0, 50).map(item => boundedText(item, 180)).filter(Boolean) : [];
+  const derivedSource = input.derived === undefined ? existing.derived : input.derived;
+  const derived = Array.isArray(derivedSource) ? derivedSource.slice(0, 50).map(item => boundedText(item, 180)).filter(Boolean) : [];
   const inventory = Array.isArray(input.inventory) ? input.inventory.slice(0, 200).map(item => {
     const category = boundedText(item?.category, 40) || "Other";
     const humanityLoss = item?.humanityLoss == null || item.humanityLoss === ""
@@ -411,7 +412,7 @@ function sanitizeEvent(input, userName) {
   const timestamp = new Date().toISOString();
   const actor = boundedText(userName, 50) || "Player";
   if (input.kind === "roll") {
-    const kind = input.rollKind === "attack" ? "attack" : input.rollKind === "skill" ? "skill" : "";
+    const kind = ["attack", "skill", "initiative"].includes(input.rollKind) ? input.rollKind : "";
     const source = input.source === "board" ? "board" : input.source === "sheet" ? "sheet" : "";
     if (!kind || !source) return null;
     return {
