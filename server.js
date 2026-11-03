@@ -78,6 +78,21 @@ function validOptionalInteger(value, max) {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= max;
 }
 
+function validHumanityAmount(value, max) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= max
+    && Math.abs(parsed * 2 - Math.round(parsed * 2)) < 1e-8;
+}
+
+function validHumanityLossNotation(value) {
+  const notation = boundedText(value, 40).replace(/\s+/g, "");
+  const fixed = notation.match(/^(\d+(?:\.\d+)?)(?:pts?)?$/i);
+  if (fixed) return validHumanityAmount(Number(fixed[1]), 9999);
+  if (!/^\d+d\d+(?:\+\d+)?(?:\/(?:\d+(?:\.\d+)?|\d+d\d+(?:\+\d+)?|pair))?$/i.test(notation)) return false;
+  const divisor = notation.match(/\/(\d+(?:\.\d+)?)$/);
+  return !divisor || Number(divisor[1]) === 1 || Number(divisor[1]) === 2;
+}
+
 function validBodyHealth(value) {
   if (value == null) return true;
   if (typeof value !== "object" || Array.isArray(value)) return false;
@@ -120,7 +135,11 @@ function validInventoryChipData(inventory) {
     const chipSkill = boundedText(item.chipSkill, 80);
     const hasChipData = chipSkill || item.socketed || (item.chipBonus != null && item.chipBonus !== "");
     if (hasChipData && boundedText(item.category, 40).toLowerCase() !== "cyberware") return false;
-    return validOptionalInteger(item.chipBonus, 9999) && (!item.socketed || Boolean(chipSkill));
+    return validOptionalInteger(item.chipBonus, 9999)
+      && (item.humanityLoss == null || item.humanityLoss === "" || validHumanityLossNotation(item.humanityLoss))
+      && validHumanityAmount(item.humanityLossPaid ?? 0, 9999)
+      && (item.humanityCharged == null || typeof item.humanityCharged === "boolean")
+      && (!item.socketed || Boolean(chipSkill));
   });
 }
 
@@ -200,25 +219,45 @@ function sanitizeCharacter(input, existing = {}) {
         || !Number.isInteger(Number(skill.value)) || Number(skill.value) < 1 || Number(skill.value) > 40
         || typeof skill.special !== "boolean"))) return null;
   const derived = Array.isArray(input.derived) ? input.derived.slice(0, 50).map(item => boundedText(item, 180)).filter(Boolean) : [];
-  const inventory = Array.isArray(input.inventory) ? input.inventory.slice(0, 200).map(item => ({
-    id: boundedText(item?.id, 100) || randomUUID(),
-    catalogId: boundedText(item?.catalogId, 100),
-    name: boundedText(item?.name, 100),
-    category: boundedText(item?.category, 40) || "Other",
-    quantity: finiteInteger(item?.quantity, 1, 0, 9999),
-    equipped: Boolean(item?.equipped),
-    chipSkill: boundedText(item?.chipSkill, 80),
-    chipBonus: item?.chipBonus == null || item.chipBonus === "" ? null : finiteInteger(item.chipBonus, 0, 0, 9999),
-    socketed: Boolean(item?.socketed),
-    description: boundedText(item?.description, 1000),
-    weaponType: boundedText(item?.weaponType, 60),
-    weaponStats: boundedText(item?.weaponStats, 1000),
-    humanityCost: boundedText(item?.humanityCost, 40),
-    weight: boundedText(item?.weight, 40),
-    cost: boundedText(item?.cost, 40),
-    sourceReference: boundedText(item?.sourceReference, 180),
-    customNotes: boundedText(item?.customNotes, 1000)
-  })).filter(item => item.name) : existing.inventory || [];
+  const inventory = Array.isArray(input.inventory) ? input.inventory.slice(0, 200).map(item => {
+    const category = boundedText(item?.category, 40) || "Other";
+    const humanityLoss = item?.humanityLoss == null || item.humanityLoss === ""
+      ? category.toLowerCase() === "cyberware" ? "5" : "0"
+      : boundedText(item.humanityLoss, 40);
+    return {
+      id: boundedText(item?.id, 100) || randomUUID(),
+      catalogId: boundedText(item?.catalogId, 100),
+      name: boundedText(item?.name, 100),
+      category,
+      quantity: finiteInteger(item?.quantity, 1, 0, 9999),
+      equipped: Boolean(item?.equipped),
+      humanityCharged: Boolean(item?.humanityCharged || (item?.equipped && existing.humanity != null)),
+      humanityLossPaid: item?.humanityLossPaid == null || item.humanityLossPaid === "" ? 0 : Number(item.humanityLossPaid),
+      chipSkill: boundedText(item?.chipSkill, 80),
+      chipBonus: item?.chipBonus == null || item.chipBonus === "" ? null : finiteInteger(item.chipBonus, 0, 0, 9999),
+      socketed: Boolean(item?.socketed),
+      description: boundedText(item?.description, 1000),
+      weaponType: boundedText(item?.weaponType, 60),
+      weaponStats: boundedText(item?.weaponStats, 1000),
+      humanityCost: boundedText(item?.humanityCost, 40),
+      humanityLoss,
+      weight: boundedText(item?.weight, 40),
+      cost: boundedText(item?.cost, 40),
+      sourceReference: boundedText(item?.sourceReference, 180),
+      customNotes: boundedText(item?.customNotes, 1000)
+    };
+  }).filter(item => item.name) : existing.inventory || [];
+  const humanityMaximum = attributes.EMP * 10;
+  const installedHumanityLoss = inventory
+    .filter(item => item.equipped && item.category.toLowerCase() === "cyberware")
+    .reduce((sum, item) => sum + (Number.isFinite(Number(item.humanityLossPaid)) && item.humanityLossPaid > 0
+      ? item.humanityLossPaid
+      : (Number(item.humanityLoss) || 0) * Math.max(1, item.quantity)), 0);
+  const storedHumanity = existing.humanity == null || existing.humanity === "" ? humanityMaximum - installedHumanityLoss : Number(existing.humanity);
+  const humanity = input.humanity == null || input.humanity === ""
+    ? Math.min(humanityMaximum, Math.max(0, validHumanityAmount(storedHumanity, 9999) ? storedHumanity : humanityMaximum))
+    : Number(input.humanity);
+  if (!validHumanityAmount(humanity, humanityMaximum)) return null;
   const healthCurrent = input.healthCurrent == null || input.healthCurrent === "" ? null : finiteInteger(input.healthCurrent, 0, 0, 9999);
   const healthMax = input.healthMax == null || input.healthMax === "" ? null : finiteInteger(input.healthMax, 0, 0, 9999);
   const eddies = input.eddies == null || input.eddies === "" ? finiteInteger(existing.eddies, 0, 0, 999999999) : Number(input.eddies);
@@ -231,6 +270,7 @@ function sanitizeCharacter(input, existing = {}) {
     role: boundedText(input.role, 80),
     handle: boundedText(input.handle, 80),
     attributes,
+    humanity,
     attributeGeneration,
     skills,
     skillGeneration,
@@ -251,6 +291,10 @@ function sanitizeCatalogItem(input) {
   if (!input || typeof input !== "object") return null;
   const name = boundedText(input.name, 100);
   if (!name) return null;
+  const category = boundedText(input.category, 40) || "Other";
+  const humanityLoss = input.humanityLoss == null || input.humanityLoss === ""
+    ? category.toLowerCase() === "cyberware" ? "5" : "0"
+    : boundedText(input.humanityLoss, 40);
   const chipSkill = boundedText(input.chipSkill, 80);
   const chipSkillOptions = Array.isArray(input.chipSkillOptions)
     ? input.chipSkillOptions.slice(0, 10).map(option => boundedText(option, 80)).filter(Boolean)
@@ -261,15 +305,17 @@ function sanitizeCatalogItem(input) {
     || (chipSkillOptions.length && (boundedText(input.category, 40).toLowerCase() !== "cyberware"
       || new Set(chipSkillOptions.map(option => option.toLowerCase())).size !== chipSkillOptions.length))
     || (pricePerLevel != null && (!Number.isSafeInteger(pricePerLevel) || pricePerLevel <= 0 || pricePerLevel > 999999999))
-    || (purchaseCost != null && (!Number.isSafeInteger(purchaseCost) || purchaseCost <= 0 || purchaseCost > 999999999))) return null;
+    || (purchaseCost != null && (!Number.isSafeInteger(purchaseCost) || purchaseCost <= 0 || purchaseCost > 999999999))
+    || !validHumanityLossNotation(humanityLoss)) return null;
   return {
     id: boundedText(input.id, 100) || randomUUID(),
     name,
-    category: boundedText(input.category, 40) || "Other",
+    category,
     description: boundedText(input.description, 1000),
     weaponType: boundedText(input.weaponType, 60),
     weaponStats: boundedText(input.weaponStats, 1000),
     humanityCost: boundedText(input.humanityCost, 40),
+    humanityLoss,
     chipSkill,
     chipSkillOptions,
     pricePerLevel,
