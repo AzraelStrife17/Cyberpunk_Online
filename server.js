@@ -47,7 +47,8 @@ const MIME_TYPES = {
   ".jpg": "image/jpeg",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml"
+  ".svg": "image/svg+xml",
+  ".ttf": "font/ttf"
 };
 
 let store = { rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };

@@ -13,10 +13,12 @@
   --cyan: #ff8590;
   --orange: #ff9a68;
   --red: #ff707d;
-  --mono: "DM Mono", Consolas, monospace;
-  --sans: "DM Sans", "Segoe UI", sans-serif;
-  --display: "Space Grotesk", "Segoe UI", sans-serif;
+  --mono: "Audiowide", sans-serif;
+  --sans: "Audiowide", sans-serif;
+  --display: "Audiowide", sans-serif;
 }
+
+@font-face { font-family: "Audiowide"; src: url("assets/fonts/audiowide-regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; }
