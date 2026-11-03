@@ -197,7 +197,10 @@ let campaignRoster = [];
 let campaignPlayerCount = 0;
 let boardIsGm = false;
 let sheetTab = "overview";
+let inventoryTab = "cyberware";
 let selectedSheetCharacterId = "";
+let sheetRollTarget = 15;
+let sheetRollModifier = 0;
 let catalogFilter = "All";
 let catalogTypeFilter = "All";
 let catalogSearch = "";
@@ -213,6 +216,7 @@ let boardState = { tokens: [], terrain: [] };
 let roomEvents = [];
 let enemyTemplates = [];
 let sheetRollResults = {};
+let sheetRollHistory = {};
 let activeSocket = null;
 let selectedBoardTokenId = "";
 let selectedBoardPieceId = "";
@@ -503,6 +507,30 @@ function skillChipBonusFor(character, skillName) {
     .reduce((sum, item) => sum + (Number.isInteger(Number(item.chipBonus)) ? Number(item.chipBonus) : 0), 0);
 }
 
+function attributeForSkill(skillName) {
+  const normalizedName = String(skillName || "").trim().toLowerCase();
+  for (const group of NORMAL_SKILL_GROUPS) {
+    if (group.skills.some(skill => skill.toLowerCase() === normalizedName)) {
+      if (group.attribute === "EMPATHY") return "EMP";
+      if (group.attribute === "COOL / WILL") return "COOL";
+      return group.attribute;
+    }
+  }
+  const specialSkillAttributes = {
+    authority: "COOL",
+    "charismatic leadership": "EMP",
+    "combat sense": "REF",
+    credibility: "EMP",
+    family: "COOL",
+    interface: "TECH",
+    "jury rig": "TECH",
+    "medical tech": "TECH",
+    resources: "COOL",
+    streetdeal: "COOL"
+  };
+  return specialSkillAttributes[normalizedName] || "INT";
+}
+
 function isWeaponItem(item) {
   return String(item?.category || "").toLowerCase() === "weapon";
 }
@@ -517,9 +545,25 @@ function weaponCombatData(item) {
   return { damageFormula, ammoType, capacity, rateOfFire };
 }
 
+function hasCyberwareWeaponFeature(item) {
+  if (String(item?.category || "").toLowerCase() !== "cyberware") return false;
+  return Boolean(String(item.weaponType || "").trim() || parseDamageFormula(weaponCombatData(item).damageFormula));
+}
+
+function isWeaponActionItem(item) {
+  return isWeaponItem(item) || hasCyberwareWeaponFeature(item);
+}
+
+function inventoryItemsForTab(inventory, tab) {
+  if (tab === "cyberware") return inventory.filter(item => String(item.category || "").toLowerCase() === "cyberware");
+  if (tab === "style") return inventory.filter(item => String(item.category || "").toLowerCase() === "style");
+  if (tab === "weapons") return inventory.filter(item => isWeaponItem(item));
+  return inventory.filter(item => !["cyberware", "style", "weapon"].includes(String(item.category || "").toLowerCase()));
+}
+
 function weaponSkillFor(character, item) {
   const skills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
-  const type = String(item.weaponType || "").toLowerCase();
+  const type = String(item.weaponType || (hasCyberwareWeaponFeature(item) ? "Melee" : "")).toLowerCase();
   const aliases = [
     { match: /handgun|autopistol|revolver|pistol/, names: ["Handgun"] },
     { match: /submachine|\bsmg\b/, names: ["Submachinegun", "Submachine Gun", "SMG"] },
@@ -568,10 +612,20 @@ function publishCharacterRoll(character, event) {
 
 function rememberSheetRoll(character, result) {
   sheetRollResults[character.id] = result;
+  sheetRollHistory[character.id] = [result, ...(sheetRollHistory[character.id] || [])].slice(0, 8);
   for (const id of ["sheet-roll-result", "sheet-overview-roll-result"]) {
     const output = document.getElementById(id);
     if (output) output.textContent = result;
   }
+  const recentActions = document.getElementById("sheet-recent-actions");
+  if (recentActions) recentActions.innerHTML = renderRecentSheetActions(character);
+}
+
+function renderRecentSheetActions(character) {
+  const history = sheetRollHistory[character.id] || [];
+  return history.length
+    ? `<div class="sheet-recent-action-list">${history.map((result, index) => `<p class="sheet-recent-action ${index ? "" : "current"}">${escapeHtml(result)}</p>`).join("")}</div>`
+    : `<p class="field-hint">Your recent attribute, skill, and weapon rolls will appear here.</p>`;
 }
 
 function initials(name = "?") {
@@ -751,7 +805,10 @@ function renderCatalogSearchResults() {
       const needsPurchase = needsLevelledPurchase || needsFlatPurchase || Boolean(item.chipSkill);
       const action = needsPurchase ? "purchase-catalog-item" : "add-catalog-item";
       const label = needsPurchase ? needsLevelledPurchase || item.chipSkill ? "Purchase chip" : "Purchase" : "＋ Add to inventory";
-      return `<tr><td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(itemDetail(item))}</span></td><td><span class="tag tag-neutral">${escapeHtml(item.category)}</span></td><td>${escapeHtml(item.cost || "—")}</td><td><button class="button button-quiet" type="button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(catalogTargetCharacterId)}" aria-label="${needsPurchase ? "Purchase" : "Add"} ${escapeHtml(item.name)} ${needsPurchase ? "for" : "to"} ${escapeHtml(character?.name || "character")}">${label}</button></td></tr>`;
+      const humanity = String(item.category || "").toLowerCase() === "cyberware" && item.humanityCost
+        ? ` · HL ${escapeHtml(item.humanityCost)}`
+        : "";
+      return `<tr><td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(itemDetail(item))}</span></td><td><span class="tag tag-neutral">${escapeHtml(item.category)}</span></td><td>${escapeHtml(item.cost || "—")}${humanity}</td><td><button class="button button-quiet" type="button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(catalogTargetCharacterId)}" aria-label="${needsPurchase ? "Purchase" : "Add"} ${escapeHtml(item.name)} ${needsPurchase ? "for" : "to"} ${escapeHtml(character?.name || "character")}">${label}</button></td></tr>`;
     }).join("")
     : `<tr><td colspan="4" class="table-empty">${catalog.length ? `No catalog entries match${query ? ` "${escapeHtml(catalogSearch.trim())}"` : " these filters"}. Try another name or type.` : "No catalog entries are available yet."}</td></tr>`;
   const count = document.getElementById("catalog-result-count");
@@ -778,8 +835,41 @@ function openCatalogSearch(characterId) {
   catalogDialog.querySelector("#catalog-search").focus();
 }
 
+function renderInventoryPanel(character, inventory) {
+  const tabs = [
+    { key: "cyberware", label: "Cybernetics" },
+    { key: "style", label: "Style" },
+    { key: "weapons", label: "Weapons" },
+    { key: "gear", label: "Gear" }
+  ];
+  const items = inventoryItemsForTab(inventory, inventoryTab);
+  const itemRows = items.map(item => {
+    const cyberware = String(item.category || "").toLowerCase() === "cyberware";
+    const checkId = `equipped-${escapeHtml(item.id)}`;
+    const chipDetail = item.chipSkill
+      ? `<span class="gear-detail">Skill chip · ${escapeHtml(item.chipSkill)} +${escapeHtml(item.chipBonus ?? 0)}${item.socketed ? " · socketed" : ""}</span>`
+      : "";
+    return `<tr>
+      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(item.weaponType || item.category || "Item")} · QTY ${escapeHtml(item.quantity)}</span>${chipDetail}</td>
+      ${cyberware ? `<td>${escapeHtml(item.humanityCost || "—")}</td>` : `<td>${escapeHtml(item.cost || "—")}</td>`}
+      <td><label class="inventory-equipped" for="${checkId}"><input id="${checkId}" type="checkbox" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-label="Equip ${escapeHtml(item.name)}" ${item.equipped ? "checked" : ""}><span>Equipped</span></label>${item.chipSkill ? `<button class="text-button inventory-socket-toggle" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}">${item.socketed ? "Unsocket chip" : "Socket chip"}</button>` : ""}</td>
+      <td class="inventory-item-actions"><button class="icon-button" type="button" data-action="edit-gear" data-id="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}">✎</button><button class="icon-button" type="button" data-action="delete-gear" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button></td>
+    </tr>`;
+  }).join("");
+  const tabLabel = tabs.find(tab => tab.key === inventoryTab)?.label || "Gear";
+  const heading = inventoryTab === "cyberware" ? "CYBERWARE · HUMANITY LOSS" : inventoryTab === "weapons" ? "WEAPON INVENTORY" : `${tabLabel.toUpperCase()} INVENTORY`;
+  const emptyLabel = inventoryTab === "cyberware" ? "No cyberware yet." : inventoryTab === "style" ? "No style items yet." : inventoryTab === "weapons" ? "No weapons yet." : "No gear items yet.";
+  return `<section class="panel sheet-inventory-panel">
+    <div class="panel-head"><div><p class="section-kicker">INVENTORY</p><h2>${escapeHtml(character.name)}'s items</h2></div><div class="sheet-inventory-actions"><button class="button button-quiet" type="button" data-action="open-catalog-search" data-character-id="${escapeHtml(character.id)}">Catalog</button><button class="button button-primary" type="button" data-action="open-custom-gear" data-character-id="${escapeHtml(character.id)}">＋ Add</button></div></div>
+    <div class="panel-body"><div class="inventory-tabs" role="tablist" aria-label="Inventory categories">${tabs.map(tab => {
+      const count = inventoryItemsForTab(inventory, tab.key).length;
+      return `<button class="inventory-tab ${inventoryTab === tab.key ? "active" : ""}" type="button" role="tab" aria-selected="${inventoryTab === tab.key}" data-inventory-tab="${tab.key}">${escapeHtml(tab.label)} <span>${count}</span></button>`;
+    }).join("")}</div><div class="table-wrap sheet-inventory-table"><table class="gear-table inventory-list-table"><thead><tr><th>ITEM</th><th>${escapeHtml(heading)}</th><th>STATUS</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${itemRows || `<tr><td colspan="4" class="table-empty">${emptyLabel} Add items from the catalog or create a custom entry.</td></tr>`}</tbody></table></div></div>
+  </section>`;
+}
+
 function renderCharacterActions(character, inventory) {
-  const equippedWeapons = inventory.filter(item => isWeaponItem(item) && item.equipped);
+  const equippedWeapons = inventory.filter(item => item.equipped && isWeaponActionItem(item));
   const attackRows = equippedWeapons.length ? equippedWeapons.map((item, index) => {
     const combat = weaponCombatData(item);
     const skill = weaponSkillFor(character, item);
@@ -789,37 +879,41 @@ function renderCharacterActions(character, inventory) {
     const damageButton = parseDamageFormula(combat.damageFormula)
       ? `<button class="damage-formula" type="button" data-action="sheet-damage-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" aria-label="Roll ${escapeHtml(combat.damageFormula)} damage for ${escapeHtml(item.name)}">${escapeHtml(combat.damageFormula)}</button>`
       : `<span class="damage-formula-unavailable">${escapeHtml(combat.damageFormula)}</span>`;
-    return `<tr>
-      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(item.weaponType || "Weapon")}</span></td>
-      <td><span class="weapon-ammo">${escapeHtml(combat.ammoType)}</span><small>${combat.capacity ? `${combat.capacity} in magazine` : "capacity not listed"}${combat.rateOfFire ? ` · ROF ${combat.rateOfFire}` : ""}</small></td>
-      <td><label class="sr-only" for="attack-rounds-${index}">Rounds fired from ${escapeHtml(item.name)}</label><input id="attack-rounds-${index}" class="input-control rounds-fired" type="number" min="1" max="${maximumRounds}" value="1" data-rounds-item-id="${escapeHtml(item.id)}"></td>
-      <td><button class="button button-primary hit-roll-button" type="button" data-action="sheet-attack-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" data-rounds-input-id="attack-rounds-${index}" aria-label="Roll hit check for ${escapeHtml(item.name)} with bonus ${bonus}">Hit +${bonus} · Roll d10</button><small>${escapeHtml(skill.name)} ${escapeHtml(skill.naturalValue)}${skill.chipBonus ? ` + ${escapeHtml(skill.chipBonus)} chip` : ""} + REF ${ref}</small></td>
-      <td>${damageButton}</td>
-    </tr>`;
-  }).join("") : `<tr><td class="table-empty" colspan="5">${inventory.some(isWeaponItem) ? "Equip a weapon in Gear & cyberware to use it here." : "Add a weapon to this character's inventory to set up an attack."}</td></tr>`;
-  const skillsByName = new Map((character.skills || []).map(normalizeSkill).filter(skill => skill.name).map(skill => [skill.name.toLowerCase(), skill]));
-  for (const item of inventory.filter(entry => entry.socketed && entry.chipSkill)) {
-    const key = String(item.chipSkill).trim().toLowerCase();
-    if (!skillsByName.has(key)) skillsByName.set(key, { name: String(item.chipSkill).trim(), value: 0, special: false });
+    return `<article class="sheet-attack-action">
+      <div class="sheet-attack-title"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.weaponType || (hasCyberwareWeaponFeature(item) ? "Cyberware weapon" : "Weapon"))} · ${escapeHtml(combat.ammoType)}</small></div>
+      <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-attack-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" data-rounds-input-id="attack-rounds-${index}" aria-label="Roll hit check for ${escapeHtml(item.name)} with bonus ${bonus}">Hit +${bonus}</button><label class="sr-only" for="attack-rounds-${index}">Rounds fired from ${escapeHtml(item.name)}</label><input id="attack-rounds-${index}" class="input-control rounds-fired" type="number" min="1" max="${maximumRounds}" value="1" data-rounds-item-id="${escapeHtml(item.id)}"></div>
+      <span class="sheet-attack-bonus">${escapeHtml(skill.name)} ${escapeHtml(skill.value)} + REF ${ref}</span><span class="sheet-attack-damage">DMG ${damageButton}</span>
+    </article>`;
+  }).join("") : `<div class="board-empty-inline">Equip a weapon or weapon-capable cyberware in the inventory to add an attack here.</div>`;
+  return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Attacks &amp; checks</h2></div></div><div class="panel-body">
+    <div class="sheet-roll-settings"><label><span>Target</span><input class="input-control" id="sheet-roll-target" type="number" value="${escapeHtml(sheetRollTarget)}"></label><label><span>Modifier</span><input class="input-control" id="sheet-roll-modifier" type="number" value="${escapeHtml(sheetRollModifier)}"></label></div>
+    <div class="sheet-attack-list">${attackRows}</div><p class="field-hint">Click an attribute or skill to roll against the target above. The GM confirms hits; damage is never applied automatically.</p>
+    <h3 class="sheet-recent-heading">Recent actions</h3><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div>
+  </div></section>`;
+}
+
+function renderSkillsPanel(character) {
+  const skills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
+  for (const item of itemsForCharacter(character).filter(entry => entry.socketed && entry.chipSkill)) {
+    if (!skills.some(skill => skill.name.toLowerCase() === String(item.chipSkill).trim().toLowerCase())) {
+      skills.push({ name: String(item.chipSkill).trim(), value: 0, special: false });
+    }
   }
-  const skills = [...skillsByName.values()];
-  const skillOptions = skills.length
-    ? skills.map((skill, index) => {
-      const chipBonus = skillChipBonusFor(character, skill.name);
-      const total = skill.value + chipBonus;
-      const label = chipBonus ? `+${skill.value} natural, +${chipBonus} chip = +${total}` : `+${skill.value}`;
-      return `<option value="${escapeHtml(skill.name)}" data-skill-value="${escapeHtml(total)}" data-natural-skill-value="${escapeHtml(skill.value)}" data-chip-bonus="${escapeHtml(chipBonus)}" ${index === 0 ? "selected" : ""}>${escapeHtml(skill.name)} (${label})</option>`;
-    }).join("")
-    : `<option value="" data-skill-value="0">No skill (0)</option>`;
-  const result = sheetRollResults[character.id] || "Roll results will appear here. If this character is linked to an active campaign, they will also appear in its board feed.";
-  return `<section class="panel sheet-action-table-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Weapon actions</h2></div></div><div class="panel-body"><p class="field-hint">The GM confirms hits. Damage is rolled here, but never applied automatically.</p><div class="table-wrap action-table-wrap"><table class="gear-table weapon-action-table"><thead><tr><th>WEAPON</th><th>AMMUNITION</th><th>ROUNDS FIRED</th><th>HIT CHECK</th><th>DAMAGE ROLL</th></tr></thead><tbody>${attackRows}</tbody></table></div></div></section>
-    <section class="panel"><div class="panel-head"><div><p class="section-kicker">SKILL CHECKS</p><h2>Roll from this sheet</h2></div></div><div class="panel-body"><div class="sheet-skill-roll-controls">
-      <label class="board-form-field"><span>Attribute</span><select id="sheet-skill-attribute">${ATTRIBUTES.map(attribute => `<option value="${attribute}" ${attribute === "REF" ? "selected" : ""}>${attribute} · ${escapeHtml(character.attributes?.[attribute] ?? 0)}</option>`).join("")}</select></label>
-      <label class="board-form-field"><span>Skill</span><select id="sheet-skill-select">${skillOptions}</select></label>
-      <label class="board-form-field"><span>Target</span><input id="sheet-roll-target" type="number" value="15"></label>
-      <label class="board-form-field"><span>Modifier</span><input id="sheet-roll-modifier" type="number" value="0"></label>
-      <button class="button button-primary" type="button" data-action="sheet-skill-roll" data-character-id="${escapeHtml(character.id)}">Roll skill check</button>
-    </div><p id="sheet-roll-result" class="sheet-roll-result" role="status" aria-live="polite">${escapeHtml(result)}</p></div></section>`;
+  const skillRows = skills.map(skill => {
+    const chipBonus = skillChipBonusFor(character, skill.name);
+    const attribute = attributeForSkill(skill.name);
+    return `<button class="sheet-skill-roll" type="button" data-action="sheet-skill-roll" data-character-id="${escapeHtml(character.id)}" data-skill-name="${escapeHtml(skill.name)}" data-attribute="${escapeHtml(attribute)}" title="Roll ${escapeHtml(skill.name)} using ${attribute} + skill + chip bonuses"><span>${escapeHtml(skill.name)}${skill.special ? " · Special" : ""}<small>${attribute}${chipBonus ? ` · +${skill.value} skill +${chipBonus} chip` : ` · +${skill.value}`}</small></span><b>+${escapeHtml(skill.value + chipBonus)}</b></button>`;
+  });
+  const groups = [
+    { label: "SPECIAL", skills: skills.filter(skill => skill.special) },
+    ...NORMAL_SKILL_GROUPS.map(group => ({ label: group.attribute, skills: skills.filter(skill => !skill.special && group.skills.some(name => name.toLowerCase() === skill.name.toLowerCase())) })),
+    { label: "OTHER", skills: skills.filter(skill => !skill.special && !NORMAL_SKILL_GROUPS.some(group => group.skills.some(name => name.toLowerCase() === skill.name.toLowerCase()))) }
+  ];
+  const groupRows = groups.filter(group => group.skills.length).map(group => {
+    const entries = group.skills.map(skill => skillRows[skills.indexOf(skill)]).join("");
+    return `<section class="sheet-skill-group"><h3>${escapeHtml(group.label)}</h3><div class="sheet-skill-list">${entries}</div></section>`;
+  }).join("");
+  return `<section class="panel sheet-skills-panel"><div class="panel-head"><div><p class="section-kicker">SKILLS</p><h2>Roll a skill</h2></div></div><div class="panel-body"><div class="sheet-skills-groups">${groupRows || `<p class="field-hint">Add skills in Edit sheet to roll them here.</p>`}</div></div></section>`;
 }
 
 function renderSheet() {
@@ -841,25 +935,12 @@ function renderSheet() {
   const portrait = character.portraitUrl
     ? `<img class="sheet-portrait" src="${escapeHtml(character.portraitUrl)}" alt="${escapeHtml(character.name)} portrait">`
     : `<div class="sheet-portrait sheet-portrait-placeholder" aria-hidden="true">${escapeHtml(initials(character.name))}</div>`;
-  const tabs = `<div class="sheet-tabs" role="tablist" aria-label="Character sheet sections"><button class="sheet-tab ${sheetTab === "overview" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetTab === "overview"}" data-sheet-tab="overview">Overview</button><button class="sheet-tab ${sheetTab === "gear" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetTab === "gear"}" data-sheet-tab="gear">Gear &amp; cyberware <span>${inventory.length}</span></button><button class="sheet-tab ${sheetTab === "backstory" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetTab === "backstory"}" data-sheet-tab="backstory">Back story</button></div>`;
-  if (sheetTab === "gear") {
-    const rows = inventory.length ? inventory.map(item => {
-      const chipDetails = item.chipSkill ? `<span class="gear-detail">Skill chip · ${escapeHtml(item.chipSkill)} +${escapeHtml(item.chipBonus ?? 0)}${item.socketed ? " · socketed" : ""}</span>` : "";
-      const socketButton = item.chipSkill ? `<button class="button button-quiet equip-button" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-pressed="${Boolean(item.socketed)}">${item.socketed ? "Socketed" : "Socket chip"}</button>` : "";
-      return `<tr><td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(itemDetail(item))}</span>${chipDetails}</td><td>${escapeHtml(item.category || "Other")}</td><td>${escapeHtml(item.quantity)}</td><td>${escapeHtml(item.weight || "—")}</td><td>${escapeHtml(item.cost || "—")}</td><td><button class="button button-quiet equip-button" type="button" data-action="edit-gear" data-id="${escapeHtml(item.id)}">Edit</button>${socketButton}<button class="button button-quiet equip-button" type="button" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-pressed="${Boolean(item.equipped)}">${item.equipped ? "Equipped" : "Equip"}</button><button class="icon-button" type="button" data-action="delete-gear" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button></td></tr>`;
-    }).join("") : `<tr><td colspan="6" class="table-empty">No inventory yet. Add something from the catalog or enter a custom item.</td></tr>`;
-    target.innerHTML = `${tabs}<div class="sheet-inventory-toolbar"><div><p class="section-kicker">CARRIED BY ${escapeHtml(character.name.toUpperCase())}</p><p class="page-subtitle">${inventory.length} ${inventory.length === 1 ? "item" : "items"} in inventory</p></div><div class="sheet-inventory-actions"><button class="button button-primary" type="button" data-action="open-catalog-search" data-character-id="${escapeHtml(character.id)}">Search item catalog</button><button class="button" type="button" data-action="open-custom-gear" data-character-id="${escapeHtml(character.id)}">＋ Custom item</button></div></div><div class="table-wrap sheet-inventory-table"><table class="gear-table"><thead><tr><th>ITEM</th><th>CATEGORY</th><th>QTY</th><th>WEIGHT</th><th>COST</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    return;
-  }
+  const tabs = `<div class="sheet-tabs" role="tablist" aria-label="Character sheet sections"><button class="sheet-tab ${sheetTab === "overview" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetTab === "overview"}" data-sheet-tab="overview">Main sheet</button><button class="sheet-tab ${sheetTab === "backstory" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetTab === "backstory"}" data-sheet-tab="backstory">Back story</button></div>`;
   if (sheetTab === "backstory") {
     target.innerHTML = `${tabs}<div class="section-grid sheet-body-grid"><section class="panel"><div class="panel-head"><div><p class="section-kicker">CHARACTER HISTORY</p><h2>Back story</h2></div></div><div class="panel-body"><div class="note-box">${escapeHtml(character.history || "No back story added.")}</div></div></section><section class="panel"><div class="panel-head"><div><p class="section-kicker">CHARACTER NOTES</p><h2>Notes</h2></div></div><div class="panel-body"><div class="note-box">${escapeHtml(character.notes || "No notes added.")}</div></div></section></div>`;
     return;
   }
-  const attributes = ATTRIBUTES.map(attribute => `<div class="attr-cell"><span>${attribute}</span><strong>${escapeHtml(character.attributes?.[attribute] ?? "—")}</strong></div>`).join("");
-  const socketedChips = inventory.filter(item => item.socketed && item.chipSkill);
-  const naturalSkills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
-  const naturalSkillRows = naturalSkills.map(skill => `<div class="sheet-chip-skill-row"><span><strong>${escapeHtml(skill.name)}${skill.special ? " · Special" : ""}</strong><small>Natural skill</small></span><b>+${escapeHtml(skill.value)}</b></div>`).join("") || `<span class="field-hint">No natural skills recorded.</span>`;
-  const chippedSkillRows = socketedChips.map(item => `<div class="sheet-chip-skill-row"><span><strong>${escapeHtml(item.chipSkill)}</strong><small>${escapeHtml(item.name)}</small></span><b>+${escapeHtml(item.chipBonus ?? 0)}</b></div>`).join("") || `<span class="field-hint">No skill chips are socketed.</span>`;
+  const attributes = ATTRIBUTES.map(attribute => `<button class="attr-cell attr-roll-button" type="button" data-action="sheet-attribute-roll" data-character-id="${escapeHtml(character.id)}" data-attribute="${attribute}" title="Roll ${attribute}">${attribute}<strong>${escapeHtml(character.attributes?.[attribute] ?? "—")}</strong></button>`).join("");
   const bodyRows = BODY_LOCATIONS.map(({ key, label }) => {
     const health = character.bodyHealth?.[key] || {};
     const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
@@ -869,24 +950,19 @@ function renderSheet() {
     const [label, ...rest] = String(item).split(":");
     return `<div class="derived-item"><span>${escapeHtml(label.trim())}</span><strong>${escapeHtml(rest.join(":").trim() || "—")}</strong></div>`;
   }).join("") || `<span class="field-hint">No custom values.</span>`;
-  const lastRoll = sheetRollResults[character.id] || "No rolls yet.";
-  const equippedItems = inventory.filter(item => item.equipped);
-  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><span class="tag tag-cyan">${character.healthCurrent == null ? "LIFE NOT SET" : `${escapeHtml(character.healthCurrent)}${character.healthMax == null ? "" : ` / ${escapeHtml(character.healthMax)}`} LIFE`}</span></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
-    <section class="panel sheet-vitals-panel"><div class="panel-head"><div><p class="section-kicker">LIFE</p><h2>Character health</h2></div></div><div class="panel-body"><form class="sheet-vitals-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><label><span class="field-label">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-primary" type="submit">Save health</button></form></div></section>
-    <section class="panel sheet-latest-roll"><div class="panel-head"><div><p class="section-kicker">LATEST ROLL</p><h2>Roll result</h2></div></div><div class="panel-body"><p id="sheet-overview-roll-result" class="sheet-roll-result" role="status" aria-live="polite">${escapeHtml(lastRoll)}</p></div></section>
-    <div class="section-grid sheet-body-grid"><section class="panel"><div class="panel-head"><div><p class="section-kicker">CHARACTERISTICS</p><h2>Attributes</h2></div></div><div class="panel-body"><div class="card-attrs sheet-attributes">${attributes}</div></div></section><section class="panel"><div class="panel-head"><div><p class="section-kicker">SKILL BONUSES</p><h2>Skills</h2></div></div><div class="panel-body"><div class="skill-summary-grid"><section><h3>Natural skills</h3><div class="sheet-chip-skills">${naturalSkillRows}</div></section><section><h3>Chipped skills</h3><div class="sheet-chip-skills">${chippedSkillRows}</div></section></div><p class="field-hint">Socketed chips with the same skill add together for skill and weapon rolls.</p></div></section>
-    <section class="panel"><div class="panel-head"><div><p class="section-kicker">BODY STATUS</p><h2>Limb health &amp; armor</h2></div></div><div class="panel-body"><form data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="table-wrap"><table class="body-status-table"><thead><tr><th>LOCATION</th><th>CURRENT</th><th>MAX</th><th>ARMOR SP</th></tr></thead><tbody>${bodyRows}</tbody></table></div><div class="sheet-vitals-submit"><button class="button button-primary" type="submit">Save limb health</button></div><p class="field-hint">Edit current limb health to track damage. Armor SP remains in Edit sheet.</p></form></div></section>
-    ${renderCharacterActions(character, inventory)}
-    <section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save eddies</button></form><p class="field-hint">Maximum balance: 999,999,999.</p></div></section>
-    <section class="panel"><div class="panel-head"><div><p class="section-kicker">TABLE VALUES</p><h2>Custom derived values</h2></div></div><div class="panel-body"><div class="derived-list">${derived}</div></div></section>
-    <section class="panel sheet-preview-inventory"><div class="panel-head"><div><p class="section-kicker">CARRIED ITEMS</p><h2>Equipped gear</h2></div><button class="text-button" type="button" data-action="open-character-gear" data-id="${escapeHtml(character.id)}">Open inventory →</button></div><div class="panel-body">${equippedItems.length ? `<div class="activity-list">${equippedItems.slice(0, 5).map(item => `<div class="activity-item"><span class="activity-mark acid"></span><div class="activity-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category)} · QTY ${escapeHtml(item.quantity)}${item.weight ? ` · ${escapeHtml(item.weight)}` : ""}</small></div></div>`).join("")}</div>` : `<span class="field-hint">No items currently equipped.</span>`}</div></section></div>`;
+  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
+    <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div></div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="table-wrap"><table class="body-status-table"><thead><tr><th>AREA</th><th>CURRENT</th><th>MAX</th><th>SP</th></tr></thead><tbody>${bodyRows}</tbody></table></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
+    <div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
+    <div class="sheet-bottom-grid"><section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save</button></form></div></section><section class="panel"><div class="panel-head"><div><p class="section-kicker">TABLE VALUES</p><h2>Custom derived values</h2></div></div><div class="panel-body"><div class="derived-list">${derived}</div></div></section></div>`;
 }
 
 function roomEventText(event) {
   if (event.kind === "roll") {
     const isAttack = event.rollKind === "attack";
     const type = isAttack ? "hit check" : "skill check";
-    const descriptor = isAttack && event.weapon ? ` with ${event.weapon}` : ` using ${event.skill || "no skill"}`;
+    const descriptor = isAttack && event.weapon
+      ? ` with ${event.weapon}`
+      : event.skill ? ` using ${event.skill}` : ` using ${event.attribute} attribute`;
     const formula = event.privateStats
       ? `d10 ${escapeHtml(event.die)} + private bonus = <strong>${escapeHtml(event.total)}</strong>`
       : `d10 ${escapeHtml(event.die)} + ${escapeHtml(event.attribute)} ${escapeHtml(event.base)} + skill ${escapeHtml(event.skillValue)} + mod ${escapeHtml(event.modifier)} = <strong>${escapeHtml(event.total)}</strong>`;
@@ -1202,24 +1278,41 @@ function sendRoomEvent(event) {
   return true;
 }
 
-function performSheetSkillRoll(characterId) {
+function performSheetAttributeRoll(characterId, attribute) {
+  const character = selectedCharacter(characterId);
+  if (!character) return showToast("Choose a character before rolling.", true);
+  const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
+  const target = Number(document.getElementById("sheet-roll-target")?.value ?? sheetRollTarget);
+  if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
+  const base = Number(character.attributes?.[attribute] || 0);
+  const die = rollD10();
+  const total = die + base + modifier;
+  const result = `${attribute} check: d10 ${die} + ${attribute} ${base} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
+  rememberSheetRoll(character, result);
+  publishCharacterRoll(character, {
+    rollKind: "skill", skill: "", attribute, die, base, skillValue: 0, modifier, total, target, success: total >= target
+  });
+}
+
+function performSheetSkillRoll(characterId, requestedSkill = "", requestedAttribute = "") {
   const character = selectedCharacter(characterId);
   if (!character) return showToast("Choose a character before rolling.", true);
   const skillSelect = document.getElementById("sheet-skill-select");
   const skillOption = skillSelect?.selectedOptions[0];
-  const attribute = document.getElementById("sheet-skill-attribute")?.value || "REF";
-  const modifier = Number(document.getElementById("sheet-roll-modifier")?.value || 0);
-  const target = Number(document.getElementById("sheet-roll-target")?.value);
+  const skillName = requestedSkill || skillOption?.value || "";
+  const skill = (character.skills || []).map(normalizeSkill).find(item => item.name.toLowerCase() === skillName.toLowerCase());
+  const chipBonus = skillChipBonusFor(character, skillName);
+  const naturalSkillValue = skill?.value || 0;
+  const skillValue = Number(skillOption?.dataset.skillValue ?? (naturalSkillValue + chipBonus));
+  const attribute = requestedAttribute || document.getElementById("sheet-skill-attribute")?.value || attributeForSkill(skillName);
+  const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
+  const target = Number(document.getElementById("sheet-roll-target")?.value ?? sheetRollTarget);
   if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
-  const skillValue = Number(skillOption?.dataset.skillValue || 0);
-  const naturalSkillValue = Number(skillOption?.dataset.naturalSkillValue || 0);
-  const chipBonus = Number(skillOption?.dataset.chipBonus || 0);
   const base = Number(character.attributes?.[attribute] || 0);
   const die = rollD10();
   const total = die + base + skillValue + modifier;
-  const skillName = skillOption?.value || "";
   const skillBreakdown = chipBonus ? `${naturalSkillValue} natural + ${chipBonus} chip = ${skillValue}` : `${skillValue}`;
-  const result = `Skill check: d10 ${die} + ${attribute} ${base} + ${skillName || "no skill"} ${skillBreakdown} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
+  const result = `${skillName} check: d10 ${die} + ${attribute} ${base} + skill ${skillBreakdown} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
   rememberSheetRoll(character, result);
   publishCharacterRoll(character, {
     rollKind: "skill", skill: skillName, attribute, die, base, skillValue, modifier, total, target, success: total >= target
@@ -1229,8 +1322,8 @@ function performSheetSkillRoll(characterId) {
 function performSheetAttackRoll(button) {
   const character = selectedCharacter(button.dataset.characterId);
   const item = itemsForCharacter(character).find(entry => entry.id === button.dataset.id);
-  if (!character || !item || !item.equipped || !isWeaponItem(item)) {
-    return showToast("Equip a weapon in this character's gear before making an attack roll.", true);
+  if (!character || !item || !item.equipped || !isWeaponActionItem(item)) {
+    return showToast("Equip a weapon or weapon-capable cyberware before making an attack roll.", true);
   }
   const combat = weaponCombatData(item);
   const input = document.getElementById(button.dataset.roundsInputId);
@@ -1257,8 +1350,8 @@ function performSheetAttackRoll(button) {
 function performSheetDamageRoll(button) {
   const character = selectedCharacter(button.dataset.characterId);
   const item = itemsForCharacter(character).find(entry => entry.id === button.dataset.id);
-  if (!character || !item || !item.equipped || !isWeaponItem(item)) {
-    return showToast("Equip a weapon in this character's gear before rolling damage.", true);
+  if (!character || !item || !item.equipped || !isWeaponActionItem(item)) {
+    return showToast("Equip a weapon or weapon-capable cyberware before rolling damage.", true);
   }
   const formula = weaponCombatData(item).damageFormula;
   const parsed = parseDamageFormula(formula);
@@ -1812,7 +1905,7 @@ function openCampaignForm(campaign) {
 }
 
 function openGearForm(item, characterId = "") {
-  const categories = ["Weapon", "Armor", "Equipment", "Cyberware", "Ammunition", "Other"].map(category => ({ value: category, label: category }));
+  const categories = ["Cyberware", "Style", "Weapon", "Armor", "Equipment", "Ammunition", "Other"].map(category => ({ value: category, label: category }));
   const owners = workspace.characters.map(character => ({ value: character.id, label: character.name }));
   const isEditing = Boolean(item?.id);
   const body = `${field("Item name", "name", item?.name ?? "", { required: true })}${selectField("Category", "category", categories, item?.category ?? "Equipment")}
@@ -1821,6 +1914,7 @@ function openGearForm(item, characterId = "") {
     ${field("Weapon type", "weaponType", item?.weaponType ?? "", { hint: "Optional; e.g. Heavy handgun." })}
     ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Optional table-entered stats, kept as custom data." })}
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
+    ${field("Humanity cost", "humanityCost", item?.humanityCost ?? "", { hint: "For cyberware, enter the table's humanity loss (for example 1D6)." })}
     ${field("Source citation", "sourceReference", item?.sourceReference ?? "", { full: true, hint: "Optional book and page reference." })}
     <div class="form-field full chip-config-fields"><span class="field-label">Skill chip setup · cyberware only</span><span class="field-hint">Link a skill chip to a skill and enter its table-specific bonus. Socketed chips appear in the character-sheet summary.</span><div class="chip-config-row">${field("Chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Leave blank for non-skill-chip cyberware." })}<label class="form-field"><span class="field-label">Chip bonus</span><input class="field-input" type="number" name="chipBonus" min="0" max="9999" step="1" value="${escapeHtml(item?.chipBonus ?? "")}"></label></div><label class="chip-socket-toggle"><input type="checkbox" name="socketed" ${item?.socketed ? "checked" : ""}><span>Socket this skill chip</span></label></div>
     ${field("Custom notes", "customNotes", item?.customNotes ?? "", { full: true, textarea: true })}`;
@@ -1848,6 +1942,7 @@ function openCatalogItemForm(item) {
     ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Enter table-specific stat values; this is custom user data." })}
     ${field("Description", "description", item?.description ?? "", { full: true, textarea: true })}
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
+    ${field("Humanity cost", "humanityCost", item?.humanityCost ?? "", { hint: "For cyberware, enter humanity loss as a value or dice formula." })}
     ${field("Skill chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Optional; use for a cyberware chip that grants a skill." })}${field("Price per chip level", "pricePerLevel", item?.pricePerLevel ?? "", { type: "number", min: 1, hint: "Optional numeric Eddies price for each chip level." })}${field("Flat purchase price", "purchaseCost", item?.purchaseCost ?? "", { type: "number", min: 1, hint: "Optional fixed price for a non-levelled catalog item." })}
     ${field("Source citation", "sourceReference", item?.sourceReference ?? "", { full: true, hint: "Optional book and page reference." })}
     ${field("Custom notes", "customNotes", item?.customNotes ?? "", { full: true, textarea: true, hint: "Catalog entries are original/custom data. Add the source item list when you are ready." })}`;
@@ -2049,7 +2144,8 @@ async function addCatalogItemToCharacter(characterId, catalogId) {
     id: makeId(), catalogId: catalogItem.id, name: catalogItem.name, category: catalogItem.category, quantity: 1, equipped: false,
     chipSkill: catalogItem.chipSkill || "", chipBonus: null, socketed: false,
     description: catalogItem.description, weaponType: catalogItem.weaponType, weaponStats: catalogItem.weaponStats,
-    weight: catalogItem.weight, cost: catalogItem.cost, sourceReference: catalogItem.sourceReference, customNotes: catalogItem.customNotes
+    weight: catalogItem.weight, cost: catalogItem.cost, humanityCost: catalogItem.humanityCost,
+    sourceReference: catalogItem.sourceReference, customNotes: catalogItem.customNotes
   }] };
   const saved = await saveCharacterToAccount(updatedCharacter, character, null, false);
   if (saved) {
@@ -2164,6 +2260,7 @@ async function purchaseCatalogItem(form) {
     description: item.description,
     weaponType: item.weaponType,
     weaponStats: item.weaponStats,
+    humanityCost: item.humanityCost,
     weight: item.weight,
     cost: `${totalCost.toLocaleString()} eb`,
     sourceReference: item.sourceReference,
@@ -2424,7 +2521,8 @@ function persistForm(form) {
       characterId: String(data.get("characterId") ?? ""), description: String(data.get("description") ?? "").trim(),
       details: String(data.get("description") ?? "").trim(), weight: String(data.get("weight") ?? "").trim(),
       weaponType: String(data.get("weaponType") ?? "").trim(), weaponStats: String(data.get("weaponStats") ?? "").trim(),
-      cost: String(data.get("cost") ?? "").trim(), customNotes: String(data.get("customNotes") ?? "").trim(),
+      cost: String(data.get("cost") ?? "").trim(), humanityCost: String(data.get("humanityCost") ?? "").trim(),
+      customNotes: String(data.get("customNotes") ?? "").trim(),
       sourceReference: String(data.get("sourceReference") ?? "").trim(),
       chipSkill, chipBonus: chipSkill ? chipBonus ?? 0 : null, socketed,
       equipped: Boolean(storedGear?.equipped || storedInventory?.equipped),
@@ -2441,7 +2539,8 @@ function persistForm(form) {
       const inventoryItem = {
         id: item.id, catalogId: item.catalogId, name: item.name, category: item.category, quantity: item.quantity,
         description: item.description, weaponType: item.weaponType, weaponStats: item.weaponStats,
-        weight: item.weight, cost: item.cost, sourceReference: item.sourceReference, customNotes: item.customNotes,
+        weight: item.weight, cost: item.cost, humanityCost: item.humanityCost,
+        sourceReference: item.sourceReference, customNotes: item.customNotes,
         chipSkill: item.chipSkill, chipBonus: item.chipBonus, socketed: item.socketed, equipped: item.equipped
       };
       owner.inventory = owner.inventory || [];
@@ -2474,6 +2573,7 @@ function persistForm(form) {
       name, category: String(data.get("category") || "Other").trim(), description: String(data.get("description") || "").trim(),
       weaponType: String(data.get("weaponType") || "").trim(), weaponStats: String(data.get("weaponStats") || "").trim(),
       weight: String(data.get("weight") || "").trim(), cost: String(data.get("cost") || "").trim(),
+      humanityCost: String(data.get("humanityCost") || "").trim(),
       chipSkill: String(data.get("chipSkill") || "").trim(), pricePerLevel, purchaseCost,
       sourceReference: String(data.get("sourceReference") || "").trim(),
       customNotes: String(data.get("customNotes") || "").trim()
@@ -2600,7 +2700,8 @@ function handleAction(button) {
   if (action === "link-character-room") void linkCharacterToRoom(id);
   if (action === "open-character-gear") {
     selectedSheetCharacterId = id;
-    sheetTab = "gear";
+    sheetTab = "overview";
+    inventoryTab = "gear";
     showView("sheet");
     renderSheet();
   }
@@ -2609,7 +2710,8 @@ function handleAction(button) {
   if (action === "open-custom-gear") openForm("gear", "", button.dataset.characterId);
   if (action === "toggle-equipped") void toggleItemEquipped(button.dataset.characterId, id);
   if (action === "toggle-socketed") void toggleSkillChipSocketed(button.dataset.characterId, id);
-  if (action === "sheet-skill-roll") performSheetSkillRoll(button.dataset.characterId);
+  if (action === "sheet-skill-roll") performSheetSkillRoll(button.dataset.characterId, button.dataset.skillName, button.dataset.attribute);
+  if (action === "sheet-attribute-roll") performSheetAttributeRoll(button.dataset.characterId, button.dataset.attribute);
   if (action === "sheet-attack-roll") performSheetAttackRoll(button);
   if (action === "sheet-damage-roll") performSheetDamageRoll(button);
   if (action === "add-catalog-item") {
@@ -2776,6 +2878,12 @@ document.addEventListener("click", event => {
     renderSheet();
     return;
   }
+  const inventorySection = event.target.closest("[data-inventory-tab]");
+  if (inventorySection) {
+    inventoryTab = inventorySection.dataset.inventoryTab;
+    renderSheet();
+    return;
+  }
   const boardTabButton = event.target.closest("[data-board-tab]");
   if (boardTabButton) {
     boardTab = boardTabButton.dataset.boardTab;
@@ -2899,6 +3007,8 @@ document.addEventListener("input", event => {
   }
   if (event.target.id === "roll-target" && Number.isFinite(Number(event.target.value))) boardRollTarget = Number(event.target.value);
   if (event.target.id === "roll-modifier" && Number.isFinite(Number(event.target.value))) boardRollModifier = Number(event.target.value);
+  if (event.target.id === "sheet-roll-target" && Number.isFinite(Number(event.target.value))) sheetRollTarget = Number(event.target.value);
+  if (event.target.id === "sheet-roll-modifier" && Number.isFinite(Number(event.target.value))) sheetRollModifier = Number(event.target.value);
 });
 document.addEventListener("dragstart", event => {
   const palette = event.target.closest("[data-palette-kind]");
