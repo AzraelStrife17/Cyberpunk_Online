@@ -18,10 +18,11 @@
         </a>
         <div class="sidebar-label">YOUR SPACE</div>
         <nav class="nav-list">
-          <button class="nav-item active" type="button" data-view="dashboard"><span class="nav-icon">⌂</span>Dashboard</button>
-          <button class="nav-item" type="button" data-view="characters"><span class="nav-icon">◈</span>Characters<span class="nav-count" id="character-count">0</span></button>
-          <button class="nav-item" type="button" data-view="campaigns"><span class="nav-icon">▤</span>Campaigns</button>
-          <button class="nav-item" type="button" data-view="sheet"><span class="nav-icon">▣</span>Character sheet</button>
+          <button class="nav-item active" type="button" data-view="dashboard" aria-current="page"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</button>
+          <button class="nav-item" type="button" data-view="characters"><span class="nav-icon" aria-hidden="true">◈</span>Characters<span class="nav-count" id="character-count">0</span></button>
+          <button class="nav-item" type="button" data-view="campaigns"><span class="nav-icon" aria-hidden="true">▤</span>Campaigns</button>
+          <button class="nav-item" type="button" data-view="sheet"><span class="nav-icon" aria-hidden="true">▣</span>Character sheet</button>
+          <button class="nav-item" type="button" data-view="board"><span class="nav-icon" aria-hidden="true">▦</span>Tactical board</button>
         </nav>
         <div class="account-controls" id="account-controls">
           <span class="account-name" id="account-name">Local workspace</span>
@@ -58,8 +59,11 @@
           <section class="view-panel" id="view-sheet" aria-labelledby="sheet-title" hidden>
             <div class="page-heading">
               <div><p class="eyebrow">YOUR CHARACTER, IN ONE PLACE</p><h1 id="sheet-title">Character sheet<span class="heading-period">.</span></h1><p class="page-subtitle">Character details and personal equipment in one place.</p></div>
-              <label class="sr-only" for="sheet-character">Choose a character</label>
-              <select id="sheet-character" class="select-control"></select>
+              <div class="sheet-heading-controls">
+                <label class="sr-only" for="sheet-character">Choose a character</label>
+                <select id="sheet-character" class="select-control"></select>
+                <button class="button sheet-layout-toggle" id="sheet-layout-toggle" type="button" aria-pressed="false" title="Switch between the refreshed and classic character-sheet layouts">Classic layout</button>
+              </div>
             </div>
             <div id="sheet-content"></div>
           </section>
@@ -75,7 +79,7 @@
           <section class="view-panel" id="view-board" aria-labelledby="board-title" hidden>
             <div class="page-heading board-page-heading">
               <div><p class="eyebrow">SHARED TABLE · 2 METERS PER SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
-              <div class="board-heading-actions"><span class="connection-pill" id="board-connection-status"><span class="connection-dot"></span> OFFLINE</span><button class="button" type="button" data-action="copy-room-code">Copy room code</button></div>
+              <div class="board-heading-actions"><button class="button" type="button" data-view-link="campaigns">Back to campaigns</button><span class="connection-pill" id="board-connection-status"><span class="connection-dot"></span> OFFLINE</span><button class="button" type="button" data-action="copy-room-code">Copy room code</button></div>
             </div>
             <div class="board-connect-bar">
               <label class="board-name-field"><span class="field-label">YOUR TABLE NAME</span><input id="board-player-name" class="input-control" maxlength="50" autocomplete="nickname" value="Player"></label>

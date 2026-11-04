@@ -13,15 +13,15 @@
   --cyan: #ff8590;
   --orange: #ff9a68;
   --red: #ff707d;
-  --mono: "Audiowide", sans-serif;
-  --sans: "Audiowide", sans-serif;
+  --mono: "Cascadia Mono", Consolas, monospace;
+  --sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --display: "Audiowide", sans-serif;
 }
 
 @font-face { font-family: "Audiowide"; src: url("assets/fonts/audiowide-regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; }
+body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
 button, input, select, textarea { font: inherit; }
 button, select { color: inherit; }
 button { cursor: pointer; }
@@ -381,6 +381,10 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
 .sheet-tab.active { border-bottom-color: var(--acid); color: var(--text); }
 .sheet-tab span { color: var(--acid); font: 9px var(--mono); }
 .sheet-hero { display: flex; align-items: center; gap: 17px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 4px; background: linear-gradient(110deg, #171216, #11151b); padding: 17px; }
+.sheet-heading-controls { display: flex; align-items: center; gap: 8px; }
+.sheet-heading-controls .select-control { min-width: 190px; }
+.sheet-layout-toggle { min-height: 36px; font-size: 11px; }
+.sheet-layout-toggle[aria-pressed="true"] { border-color: #54323a; color: #ff9aa1; }
 .sheet-portrait { display: grid; width: 100px; height: 120px; flex: 0 0 auto; place-items: center; border: 1px solid #694049; border-radius: 3px; object-fit: cover; }
 .sheet-portrait-placeholder { background: #25171b; color: var(--acid); font: 600 30px var(--display); }
 .sheet-identity { min-width: 0; flex: 1; }
@@ -411,7 +415,14 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
 .body-health-values label { display: grid; min-width: 0; gap: 3px; }
 .body-health-input { width: 100%; min-width: 0; min-height: 31px; padding: 4px 6px; font: 10px var(--mono); }
 .sheet-limb-save { display: block; margin: 6px 0 0 auto; }
-.sheet-main-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(230px, .75fr) minmax(330px, 1.15fr); gap: 13px; align-items: start; }
+.sheet-main-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "actions actions" "skills inventory"; gap: 13px; align-items: start; }
+.sheet-actions-panel { grid-area: actions; }
+.sheet-skills-panel { grid-area: skills; }
+.sheet-inventory-panel { grid-area: inventory; }
+.sheet-layout-classic .sheet-main-grid { grid-template-columns: minmax(0, 1.1fr) minmax(230px, .75fr) minmax(330px, 1.15fr); grid-template-areas: none; }
+.sheet-layout-classic .sheet-main-grid > .sheet-actions-panel,
+.sheet-layout-classic .sheet-main-grid > .sheet-skills-panel,
+.sheet-layout-classic .sheet-main-grid > .sheet-inventory-panel { grid-area: auto; }
 .sheet-skills-panel, .sheet-actions-panel, .sheet-inventory-panel { min-width: 0; }
 .sheet-skills-groups { height: 360px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .sheet-skill-group h3 { margin: 0 0 6px; color: var(--dim); font: 8px var(--mono); letter-spacing: .06em; }
@@ -538,8 +549,8 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
   .brand-copy strong { font-size: 13px; }
   .brand-copy small { font-size: 8px; }
   .sidebar-label, .sidebar-bottom { display: none; }
-  .nav-list { order: 3; width: 100%; flex: 0 0 100%; justify-content: flex-start; gap: 3px; overflow-x: auto; }
-  .nav-item { min-height: 36px; flex: 0 0 auto; gap: 6px; padding: 0 9px; font-size: 11px; white-space: nowrap; }
+  .nav-list { order: 3; width: 100%; flex: 0 0 100%; flex-wrap: wrap; justify-content: stretch; gap: 3px; overflow: visible; }
+  .nav-item { min-height: 36px; flex: 1 1 calc(33.333% - 3px); justify-content: center; gap: 6px; padding: 0 6px; font-size: 11px; white-space: normal; }
   .nav-icon { width: auto; font-size: 13px; }
   .nav-count { display: none; }
   .account-controls { margin-left: auto; }
@@ -553,6 +564,8 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
   .page-wrap { padding: 27px 16px 20px; }
   .page-heading { align-items: flex-start; margin-bottom: 23px; }
   .page-heading > .button { flex: 0 0 auto; margin-top: 9px; }
+  .sheet-heading-controls { width: 100%; flex-wrap: wrap; }
+  .sheet-heading-controls .select-control { min-width: 0; flex: 1 1 170px; }
   .eyebrow { font-size: 8px; }
   h1 { font-size: 28px; }
   .page-subtitle { font-size: 11px; }
@@ -560,8 +573,9 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
   .metric-card { min-height: 88px; padding: 12px; }
   .metric-value { margin-top: 8px; font-size: 22px; }
   .character-grid, .campaign-grid, .sheet-body-grid { grid-template-columns: 1fr; }
-  .sheet-main-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .sheet-inventory-panel { grid-column: 1 / -1; }
+  .sheet-main-grid { grid-template-columns: 1fr; grid-template-areas: "actions" "skills" "inventory"; }
+  .sheet-layout-classic .sheet-main-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: none; }
+  .sheet-layout-classic .sheet-inventory-panel { grid-column: 1 / -1; }
   .sheet-top-stats { grid-template-columns: 1fr; }
   .board-layout { grid-template-columns: 1fr; }
   .board-sidebar { grid-column: auto; grid-template-columns: 1fr; }
@@ -592,8 +606,8 @@ html:has(#catalog-dialog[open]) { overflow: hidden; }
   .dialog-form { padding: 15px; }
   .dialog-head { padding: 16px 15px 13px; }
   .attributes-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .sheet-main-grid { grid-template-columns: 1fr; }
-  .sheet-inventory-panel { grid-column: auto; }
+  .sheet-layout-classic .sheet-main-grid { grid-template-columns: 1fr; }
+  .sheet-layout-classic .sheet-inventory-panel { grid-column: auto; }
   .sheet-hero { gap: 10px; padding: 11px; }
   .sheet-portrait { width: 76px; height: 92px; }
   .sheet-life-form { flex-wrap: wrap; }

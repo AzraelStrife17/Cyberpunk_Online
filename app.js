@@ -1,7 +1,49 @@
-import { isWeaponActionItem, parseDamageFormula, weaponCombatData } from "./weapon-actions.js";
+import {
+  consumeWeaponRounds,
+  formatWeaponStats,
+  hasCyberwareWeaponFeature,
+  isWeaponItem,
+  isWeaponActionItem,
+  loadedRoundsFor,
+  parseDamageFormula,
+  reloadWeapon,
+  usesAmmunition,
+  validateCustomWeapon,
+  weaponAttackTotal,
+  weaponCombatData,
+  weaponSkillNamesForType,
+  WEAPON_CONCEALABILITY_OPTIONS,
+  WEAPON_DAMAGE_DIE_OPTIONS,
+  WEAPON_RELIABILITY_OPTIONS,
+  WEAPON_TYPE_OPTIONS,
+  validateCyberwareWeapon
+} from "./weapon-actions.js";
+import { apiRequest } from "./client/api-client.js";
+import { renderCampaigns as renderCampaignsView } from "./client/features/campaigns-view.js";
+import { renderCharacters as renderCharactersView } from "./client/features/characters-view.js";
+import {
+  ATTRIBUTES,
+  BODY_LOCATIONS,
+  currentEmpathyFor,
+  currentHumanityFor,
+  humanityLossChoices,
+  humanityLossForItem,
+  isValidHumanityAmount,
+  normalizeBodyArmorSP,
+  normalizeBodyHealth,
+  normalizeCharacter,
+  normalizeOptionalInteger,
+  normalizeSkill,
+  readOptionalFormInteger,
+  skillEntries,
+  skillText,
+  startingHumanityFor,
+  staticHumanityLoss,
+  validHumanityLossNotation
+} from "./shared/character-domain.js";
 
 const STORAGE_KEY = "afterdark-workspace-v1";
-const ATTRIBUTES = ["INT", "REF", "TECH", "COOL", "ATTR", "LUCK", "MA", "BODY", "EMP"];
+const SHEET_LAYOUT_STORAGE_KEY = "afterdark-sheet-layout";
 const CINEMATIC_ATTRIBUTE_TIERS = [
   { value: "major-hero", label: "Major hero", points: 80 },
   { value: "major-supporting", label: "Major supporting char.", points: 70 },
@@ -19,14 +61,6 @@ const NORMAL_SKILL_GROUPS = [
   { attribute: "TECH", skills: ["Aero Tech", "AV Tech", "Basic Tech", "Cryotank Operation", "Cyberdeck Design", "CyberTech", "Demolitions", "Disguise", "Electronics", "Elect. Security", "First Aid", "Forgery", "Gyro Tech", "Pharmaceuticals", "Pick Lock", "Pick Pocket", "Play Instrument", "Weaponsmith"] }
 ];
 const SPECIAL_SKILLS = ["Authority", "Charismatic Leadership", "Combat Sense", "Credibility", "Family", "Interface", "Jury Rig", "Medical Tech", "Resources", "Streetdeal"];
-const BODY_LOCATIONS = [
-  { key: "head", label: "Head" },
-  { key: "torso", label: "Torso" },
-  { key: "rightArm", label: "Right arm" },
-  { key: "leftArm", label: "Left arm" },
-  { key: "rightLeg", label: "Right leg" },
-  { key: "leftLeg", label: "Left leg" }
-];
 const VIEWS = {
   dashboard: "OVERVIEW",
   characters: "CHARACTERS",
@@ -46,98 +80,6 @@ const TERRAIN_TEMPLATES = [
   { name: "Street vehicle", widthMeters: 6, heightMeters: 4, color: "#725e48" },
   { name: "Kiosk", widthMeters: 4, heightMeters: 4, color: "#526c70" }
 ];
-
-function normalizeSkill(skill) {
-  if (skill && typeof skill === "object") {
-    return { name: String(skill.name ?? "").trim(), value: Number.isFinite(Number(skill.value)) ? Number(skill.value) : 0, special: Boolean(skill.special) };
-  }
-  const match = String(skill ?? "").trim().match(/^(.*?)(?:\s*:\s*(-?\d+))?$/);
-  return { name: match?.[1]?.trim() ?? "", value: match?.[2] ? Number(match[2]) : 0, special: false };
-}
-
-function skillText(skills = []) {
-  return skills.map(normalizeSkill).filter(skill => skill.name).map(skill => skill.value ? `${skill.name}: ${skill.value}` : skill.name).join(", ");
-}
-
-function skillEntries(text, previousSkills = []) {
-  const previousSpecialSkills = new Set(previousSkills.map(normalizeSkill).filter(skill => skill.special).map(skill => skill.name.toLowerCase()));
-  return String(text).split(",").map(entry => normalizeSkill(entry)).filter(skill => skill.name)
-    .map(skill => ({ ...skill, special: previousSpecialSkills.has(skill.name.toLowerCase()) }));
-}
-
-function normalizeOptionalInteger(value, max) {
-  if (value == null || value === "") return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : null;
-}
-
-function readOptionalFormInteger(formData, name, max) {
-  const raw = String(formData.get(name) ?? "").trim();
-  if (!raw) return null;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : undefined;
-}
-
-function normalizeBodyHealth(value) {
-  return Object.fromEntries(BODY_LOCATIONS.map(({ key }) => {
-    const location = value?.[key] || {};
-    return [key, {
-      current: normalizeOptionalInteger(location.current, 9999),
-      max: normalizeOptionalInteger(location.max, 9999)
-    }];
-  }));
-}
-
-function normalizeBodyArmorSP(value) {
-  return Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, normalizeOptionalInteger(value?.[key], 9999)]));
-}
-
-function startingHumanityFor(character) {
-  return Math.max(0, Number(character.attributes?.EMP) || 0) * 10;
-}
-
-function currentHumanityFor(character) {
-  const maximum = startingHumanityFor(character);
-  const humanity = Number(character.humanity);
-  return isValidHumanityAmount(humanity, maximum) ? humanity : maximum;
-}
-
-function currentEmpathyFor(character) {
-  const original = Number(character.attributes?.EMP) || 0;
-  return Math.min(original, Math.ceil(currentHumanityFor(character) / 10));
-}
-
-function isValidHumanityAmount(value, maximum) {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount >= 0 && amount <= maximum
-    && Math.abs(amount * 2 - Math.round(amount * 2)) < 1e-8;
-}
-
-function humanityLossForItem(item) {
-  if (String(item?.category || "").toLowerCase() !== "cyberware") return "0";
-  return String(item.humanityLoss ?? "5").trim() || "5";
-}
-
-function staticHumanityLoss(notation) {
-  const match = String(notation).trim().match(/^(\d+(?:\.\d+)?)(?:\s*pts?)?$/i);
-  return match ? Number(match[1]) : null;
-}
-
-function humanityLossChoices(notation) {
-  const choices = String(notation).split("/");
-  return choices.length === 2 && choices.every(choice => /^\d+d\d+(?:\+\d+)?$/i.test(choice))
-    ? choices
-    : [];
-}
-
-function validHumanityLossNotation(value) {
-  const notation = String(value ?? "").replace(/\s+/g, "");
-  const fixed = notation.match(/^(\d+(?:\.\d+)?)(?:pts?)?$/i);
-  if (fixed) return isValidHumanityAmount(Number(fixed[1]), 9999);
-  if (!/^\d+d\d+(?:\+\d+)?(?:\/(?:\d+(?:\.\d+)?|\d+d\d+(?:\+\d+)?|pair))?$/i.test(notation)) return false;
-  const divisor = notation.match(/\/(\d+(?:\.\d+)?)$/);
-  return !divisor || Number(divisor[1]) === 1 || Number(divisor[1]) === 2;
-}
 
 function rollHumanityLoss(notation, chosenFormula, quantity) {
   const fixed = staticHumanityLoss(notation);
@@ -164,40 +106,6 @@ function rollHumanityLoss(notation, chosenFormula, quantity) {
   const amount = Number(results.reduce((sum, result) => sum + result.amount, 0).toFixed(2));
   const detail = `${selected}${units > 1 ? ` × ${units}` : ""}: ${results.map(result => `[${result.rolls.join(", ")}]${modifier ? ` + ${modifier}` : ""}${divisor > 1 ? ` / ${divisor}` : ""} = ${result.amount}`).join("; ")}`;
   return { amount, detail, rolled: true };
-}
-
-function normalizeCharacter(character) {
-  const current = character.healthCurrent;
-  const maximum = character.healthMax;
-  const eddies = Number(character.eddies);
-  const inventory = Array.isArray(character.inventory)
-    ? character.inventory.map(item => ({
-      ...item,
-      humanityLoss: humanityLossForItem(item),
-      humanityCharged: Boolean(item.humanityCharged || (item.equipped && character.humanity != null)),
-      humanityLossPaid: isValidHumanityAmount(item.humanityLossPaid, 9999) ? Number(item.humanityLossPaid) : 0
-    }))
-    : [];
-  const humanityMaximum = startingHumanityFor(character);
-  const installedLoss = inventory
-    .filter(item => item.equipped && String(item.category || "").toLowerCase() === "cyberware")
-    .reduce((sum, item) => sum + (Number.isFinite(item.humanityLossPaid) && item.humanityLossPaid > 0
-      ? item.humanityLossPaid
-      : staticHumanityLoss(humanityLossForItem(item)) || 0), 0);
-  const humanity = character.humanity == null || character.humanity === ""
-    ? Math.max(0, humanityMaximum - installedLoss)
-    : Number(character.humanity);
-  return {
-    ...character,
-    skills: Array.isArray(character.skills) ? character.skills.map(normalizeSkill).filter(skill => skill.name) : [],
-    inventory,
-    humanity: isValidHumanityAmount(humanity, humanityMaximum) ? humanity : Math.max(0, humanityMaximum - installedLoss),
-    bodyHealth: normalizeBodyHealth(character.bodyHealth),
-    bodyArmorSP: normalizeBodyArmorSP(character.bodyArmorSP),
-    healthCurrent: current != null && Number.isFinite(Number(current)) ? Number(current) : null,
-    healthMax: maximum != null && Number.isFinite(Number(maximum)) ? Number(maximum) : null,
-    eddies: Number.isInteger(eddies) ? Math.max(0, Math.min(999999999, eddies)) : 0
-  };
 }
 
 function demoWorkspace() {
@@ -277,6 +185,15 @@ function loadWorkspace() {
   }
 }
 
+function loadSheetLayoutPreference() {
+  try {
+    return localStorage.getItem(SHEET_LAYOUT_STORAGE_KEY) === "classic" ? "classic" : "modern";
+  } catch (error) {
+    console.warn("Could not read the character-sheet layout preference.", error);
+    return "modern";
+  }
+}
+
 let workspace = loadWorkspace();
 let signedInAccount = null;
 let friendData = { friends: [], requests: [], messages: [] };
@@ -300,6 +217,7 @@ let catalogTypeFilter = "All";
 let catalogSearch = "";
 let catalogTargetCharacterId = "";
 let activeView = "dashboard";
+let sheetLayout = loadSheetLayoutPreference();
 let boardTab = "terrain";
 let activeBoardCampaignId = "";
 let connectedCampaignId = "";
@@ -321,6 +239,7 @@ let boardRollAttribute = "REF";
 let boardRollWeapon = "";
 let boardRollTarget = 15;
 let boardRollModifier = 0;
+const weaponOperationsInFlight = new Set();
 let toastTimer;
 const dialog = document.getElementById("editor-dialog");
 const dialogContent = document.getElementById("dialog-content");
@@ -372,24 +291,6 @@ function storeGmKey(campaignId, key) {
     console.error("Could not save the private GM key in this browser tab.", error);
     showToast("Copy the GM key now; this browser could not store it for this tab.", true);
   }
-}
-
-async function apiRequest(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { "content-type": "application/json" }),
-      ...(options.headers || {})
-    }
-  });
-  const payload = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(payload.error || `Request failed (${response.status}).`);
-    error.status = response.status;
-    throw error;
-  }
-  return payload;
 }
 
 function updateAccountControls() {
@@ -646,16 +547,8 @@ function inventoryItemsForTab(inventory, tab) {
 
 function weaponSkillFor(character, item) {
   const skills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
-  const type = String(item.weaponType || (hasCyberwareWeaponFeature(item) ? "Melee" : "")).toLowerCase();
-  const aliases = [
-    { match: /handgun|autopistol|revolver|pistol/, names: ["Handgun"] },
-    { match: /submachine|\bsmg\b/, names: ["Submachinegun", "Submachine Gun", "SMG"] },
-    { match: /shotgun/, names: ["Shotgun", "Rifle"] },
-    { match: /rifle/, names: ["Rifle"] },
-    { match: /heavy weapon|machine gun|launcher|grenade|flamethrower/, names: ["Heavy Weapons"] },
-    { match: /melee|knife|sword|katana|blade/, names: ["Melee", "Fencing"] }
-  ].find(entry => entry.match.test(type));
-  const names = aliases?.names || [item.weaponType || ""];
+  const type = item.weaponType || (hasCyberwareWeaponFeature(item) ? "Melee" : "");
+  const names = weaponSkillNamesForType(type);
   const skill = skills.find(entry => names.some(name => entry.name.toLowerCase() === name.toLowerCase()));
   const name = skill?.name || names[0] || item.weaponType || "Weapon skill";
   const naturalValue = skill?.value || 0;
@@ -827,31 +720,18 @@ function renderFriendPanel() {
 }
 
 function renderCharacters() {
-  const createButton = document.querySelector('#view-characters [data-new="character"]');
-  if (createButton) {
-    const atLimit = Boolean(signedInAccount && workspace.characters.length >= MAX_CHARACTERS_PER_ACCOUNT);
-    createButton.disabled = atLimit;
-    createButton.title = atLimit ? `This account has reached its ${MAX_CHARACTERS_PER_ACCOUNT}-character limit.` : "";
-  }
-  const content = workspace.characters.length
-    ? `<div class="section-head"><div><p class="section-kicker">ROSTER</p><h2>${workspace.characters.length} ${workspace.characters.length === 1 ? "character" : "characters"}</h2><p class="page-subtitle">${signedInAccount ? `${workspace.characters.length}/${MAX_CHARACTERS_PER_ACCOUNT} characters used on this account.` : "Sign in to create, own, and sync characters."}</p></div></div><div class="character-grid">${workspace.characters.map(characterCard).join("")}</div>`
-    : emptyState("ROSTER EMPTY", "A blank page in a loud city.", "Create a character to keep attributes, skills, notes, and history in one place.", "Create a character", "character");
-  document.getElementById("characters-content").innerHTML = `${demoBanner()}${content}`;
+  renderCharactersView({
+    workspace,
+    signedInAccount,
+    maxCharacters: MAX_CHARACTERS_PER_ACCOUNT,
+    characterCard,
+    emptyState,
+    demoBanner
+  });
 }
 
 function renderCampaigns() {
-  const campaigns = workspace.campaigns.map(campaign => {
-    const characterNames = (campaign.characterIds ?? []).map(id => selectedCharacter(id)?.name).filter(Boolean);
-    const sessions = campaign.sessions ?? [];
-    return `<article class="campaign-card">
-      <div class="card-top"><div><p class="card-kicker">CAMPAIGN</p><h3>${escapeHtml(campaign.name)}</h3></div><div class="card-actions"><button class="icon-button" type="button" data-action="edit-campaign" data-id="${escapeHtml(campaign.id)}" aria-label="Edit ${escapeHtml(campaign.name)}" title="Edit campaign">✎</button><button class="icon-button" type="button" data-action="delete-campaign" data-id="${escapeHtml(campaign.id)}" aria-label="Delete ${escapeHtml(campaign.name)}" title="Delete campaign">×</button></div></div>
-      <p>${escapeHtml(campaign.description || "No campaign notes yet.")}</p>
-      <div class="campaign-meta"><span class="tag tag-neutral">${escapeHtml(campaign.gm ? `GM · ${campaign.gm}` : "GM NOT SET")}</span><span class="tag tag-cyan">${characterNames.length} ${characterNames.length === 1 ? "CHARACTER" : "CHARACTERS"}</span></div>
-      <div class="session-list">${sessions.length ? sessions.map(session => `<div class="session-entry"><time>${escapeHtml(session.date || "NO DATE")}</time><div><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(session.notes || "No session notes.")}</small></div><div class="card-actions"><button class="icon-button" type="button" data-action="edit-session" data-id="${escapeHtml(campaign.id)}" data-session-id="${escapeHtml(session.id)}" aria-label="Edit ${escapeHtml(session.title)}">✎</button><button class="icon-button" type="button" data-action="delete-session" data-id="${escapeHtml(campaign.id)}" data-session-id="${escapeHtml(session.id)}" aria-label="Delete ${escapeHtml(session.title)}">×</button></div></div>`).join("") : `<span class="field-hint">No sessions logged yet.</span>`}</div>
-      <div class="card-bottom campaign-actions"><small>${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} · ${(campaign.characterIds ?? []).length} linked</small><div><button class="button button-quiet" type="button" data-action="copy-campaign-code" data-id="${escapeHtml(campaign.id)}">Invite</button><button class="button button-quiet" type="button" data-action="add-session" data-id="${escapeHtml(campaign.id)}">＋ Add session</button><button class="button button-primary" type="button" data-action="open-campaign-board" data-id="${escapeHtml(campaign.id)}">Play board</button></div></div>
-    </article>`;
-  }).join("");
-  document.getElementById("campaigns-content").innerHTML = `${demoBanner()}${campaigns ? `<div class="campaign-grid">${campaigns}</div>` : emptyState("NO CAMPAIGNS", "Make room for a story.", "Create a campaign to organize your crew, session notes, and next job.", "Create a campaign", "campaign")}`;
+  renderCampaignsView({ workspace, selectedCharacter, escapeHtml, demoBanner, emptyState });
 }
 
 function itemDetail(item) {
@@ -890,15 +770,16 @@ function renderCatalogSearchResults() {
   const character = selectedCharacter(catalogTargetCharacterId);
   results.innerHTML = catalogItems.length
     ? catalogItems.map(item => {
+      const isAmmo = String(item.category || "").toLowerCase() === "ammo";
       const needsLevelledPurchase = Number.isInteger(Number(item.pricePerLevel)) && Number(item.pricePerLevel) > 0;
       const needsFlatPurchase = Number.isInteger(Number(item.purchaseCost)) && Number(item.purchaseCost) > 0;
       const needsPurchase = needsLevelledPurchase || needsFlatPurchase || Boolean(item.chipSkill);
-      const action = needsPurchase ? "purchase-catalog-item" : "add-catalog-item";
-      const label = needsPurchase ? needsLevelledPurchase || item.chipSkill ? "Purchase chip" : "Purchase" : "＋ Add to inventory";
+      const action = isAmmo ? "add-ammo-to-inventory" : needsPurchase ? "purchase-catalog-item" : "add-catalog-item";
+      const label = isAmmo ? "＋ Add ammo" : needsPurchase ? needsLevelledPurchase || item.chipSkill ? "Purchase chip" : "Purchase" : "＋ Add to inventory";
       const humanity = String(item.category || "").toLowerCase() === "cyberware"
         ? ` · HL ${escapeHtml(humanityLossForItem(item))}${item.humanityCost ? ` (${escapeHtml(item.humanityCost)})` : ""}`
         : "";
-      return `<tr><td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(itemDetail(item))}</span></td><td><span class="tag tag-neutral">${escapeHtml(item.category)}</span></td><td>${escapeHtml(item.cost || "—")}${humanity}</td><td><button class="button button-quiet" type="button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(catalogTargetCharacterId)}" aria-label="${needsPurchase ? "Purchase" : "Add"} ${escapeHtml(item.name)} ${needsPurchase ? "for" : "to"} ${escapeHtml(character?.name || "character")}">${label}</button></td></tr>`;
+      return `<tr><td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(itemDetail(item))}</span></td><td><span class="tag tag-neutral">${escapeHtml(item.category)}</span></td><td>${escapeHtml(item.cost || "—")}${humanity}</td><td><button class="button button-quiet" type="button" data-action="${action}" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(catalogTargetCharacterId)}" aria-label="${isAmmo ? "Add" : needsPurchase ? "Purchase" : "Add"} ${escapeHtml(item.name)} ${isAmmo || !needsPurchase ? "to" : "for"} ${escapeHtml(character?.name || "character")}">${label}</button></td></tr>`;
     }).join("")
     : `<tr><td colspan="4" class="table-empty">${catalog.length ? `No catalog entries match${query ? ` "${escapeHtml(catalogSearch.trim())}"` : " these filters"}. Try another name or type.` : "No catalog entries are available yet."}</td></tr>`;
   const count = document.getElementById("catalog-result-count");
@@ -935,6 +816,7 @@ function renderInventoryPanel(character, inventory) {
   const items = inventoryItemsForTab(inventory, inventoryTab);
   const itemRows = items.map(item => {
     const cyberware = String(item.category || "").toLowerCase() === "cyberware";
+    const ammunition = String(item.category || "").toLowerCase() === "ammo";
     const checkId = `equipped-${escapeHtml(item.id)}`;
     const installAction = item.equipped ? "Uninstall" : "Install";
     const paidDetail = cyberware && item.humanityCharged ? ` · paid ${escapeHtml(item.humanityLossPaid ?? 0)}` : "";
@@ -942,9 +824,9 @@ function renderInventoryPanel(character, inventory) {
       ? `<span class="gear-detail">Skill chip · ${escapeHtml(item.chipSkill)} +${escapeHtml(item.chipBonus ?? 0)}${item.socketed ? " · socketed" : ""}</span>`
       : "";
     return `<tr>
-      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(item.weaponType || item.category || "Item")} · QTY ${escapeHtml(item.quantity)}</span>${chipDetail}</td>
+      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(ammunition ? `${item.category} · ${item.quantity} rounds` : `${item.weaponType || item.category || "Item"} · QTY ${item.quantity}`)}</span>${chipDetail}</td>
       ${cyberware ? `<td>HL ${escapeHtml(humanityLossForItem(item))}${item.humanityCost ? ` · ${escapeHtml(item.humanityCost)}` : ""}${paidDetail}</td>` : `<td>${escapeHtml(item.cost || "—")}</td>`}
-      <td><label class="inventory-equipped" for="${checkId}"><input id="${checkId}" type="checkbox" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-label="${cyberware ? `${installAction} ${escapeHtml(item.name)}` : `Equip ${escapeHtml(item.name)}`}" ${item.equipped ? "checked" : ""}><span>${cyberware ? item.equipped ? "Installed" : "Install" : "Equipped"}</span></label>${item.chipSkill ? `<button class="text-button inventory-socket-toggle" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}">${item.socketed ? "Unsocket chip" : "Socket chip"}</button>` : ""}</td>
+      <td>${ammunition ? `<span class="inventory-equipped">${Number(item.quantity) > 0 ? "In stock" : "Empty"}</span>` : `<label class="inventory-equipped" for="${checkId}"><input id="${checkId}" type="checkbox" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-label="${cyberware ? `${installAction} ${escapeHtml(item.name)}` : `Equip ${escapeHtml(item.name)}`}" ${item.equipped ? "checked" : ""}><span>${cyberware ? item.equipped ? "Installed" : "Install" : "Equipped"}</span></label>`}${item.chipSkill ? `<button class="text-button inventory-socket-toggle" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}">${item.socketed ? "Unsocket chip" : "Socket chip"}</button>` : ""}</td>
       <td class="inventory-item-actions"><button class="icon-button" type="button" data-action="edit-gear" data-id="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}">✎</button><button class="icon-button" type="button" data-action="delete-gear" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button></td>
     </tr>`;
   }).join("");
@@ -971,20 +853,22 @@ function renderCharacterActions(character, inventory) {
   const attackRows = equippedWeapons.length ? equippedWeapons.map((item, index) => {
     const combat = weaponCombatData(item);
     const skill = weaponSkillFor(character, item);
-    const bonus = ref + skill.value;
+    const bonus = weaponAttackTotal(0, ref, skill.value, item);
     const maximumRounds = combat.rateOfFire || combat.capacity || 1;
+    const tracksAmmo = usesAmmunition(item);
+    const loaded = tracksAmmo ? loadedRoundsFor(item) : null;
     const damageButton = parseDamageFormula(combat.damageFormula)
       ? `<button class="damage-formula" type="button" data-action="sheet-damage-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" aria-label="Roll ${escapeHtml(combat.damageFormula)} damage for ${escapeHtml(item.name)}">${escapeHtml(combat.damageFormula)}</button>`
       : `<span class="damage-formula-unavailable">${escapeHtml(combat.damageFormula)}</span>`;
     return `<article class="sheet-attack-action">
-      <div class="sheet-attack-title"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.weaponType || (hasCyberwareWeaponFeature(item) ? "Cyberware weapon" : "Weapon"))} · ${escapeHtml(combat.ammoType)}</small></div>
-      <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-attack-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" data-rounds-input-id="attack-rounds-${index}" aria-label="Roll hit check for ${escapeHtml(item.name)} with bonus ${bonus}">Hit +${bonus}</button><label class="sr-only" for="attack-rounds-${index}">Rounds fired from ${escapeHtml(item.name)}</label><input id="attack-rounds-${index}" class="input-control rounds-fired" type="number" min="1" max="${maximumRounds}" value="1" data-rounds-item-id="${escapeHtml(item.id)}"></div>
-      <span class="sheet-attack-bonus">${escapeHtml(skill.name)} ${escapeHtml(skill.value)} + REF ${ref}</span><span class="sheet-attack-damage">DMG ${damageButton}</span>
+      <div class="sheet-attack-title"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.weaponType || (hasCyberwareWeaponFeature(item) ? "Cyberware weapon" : "Weapon"))} · ${escapeHtml(combat.ammoType || "No ammunition")}${tracksAmmo ? ` · ${loaded}/${combat.capacity} loaded` : ""}</small></div>
+      <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-attack-roll" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" data-rounds-input-id="attack-rounds-${index}" aria-label="Roll hit check for ${escapeHtml(item.name)} with bonus ${bonus}" ${tracksAmmo && loaded === 0 ? "disabled" : ""}>Hit ${bonus >= 0 ? "+" : ""}${bonus}</button><label class="sr-only" for="attack-rounds-${index}">Rounds fired from ${escapeHtml(item.name)}</label><input id="attack-rounds-${index}" class="input-control rounds-fired" type="number" min="1" max="${maximumRounds}" value="1" data-rounds-item-id="${escapeHtml(item.id)}">${tracksAmmo ? `<button class="button button-quiet" type="button" data-action="sheet-reload-weapon" data-character-id="${escapeHtml(character.id)}" data-id="${escapeHtml(item.id)}" aria-label="Reload ${escapeHtml(item.name)}">Reload</button>` : ""}</div>
+      <span class="sheet-attack-bonus">${escapeHtml(skill.name)} ${escapeHtml(skill.value)} + REF ${ref} + WA ${combat.weaponAccuracy >= 0 ? "+" : ""}${combat.weaponAccuracy}</span><span class="sheet-attack-damage">DMG ${damageButton}</span>
     </article>`;
   }).join("") : `<div class="board-empty-inline">Equip a weapon or weapon-capable cyberware in the inventory to add an attack here.</div>`;
   return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Attacks, checks &amp; initiative</h2></div></div><div class="panel-body">
     <div class="sheet-roll-settings"><label><span>Target</span><input class="input-control" id="sheet-roll-target" type="number" value="${escapeHtml(sheetRollTarget)}"></label><label><span>Modifier</span><input class="input-control" id="sheet-roll-modifier" type="number" value="${escapeHtml(sheetRollModifier)}"></label></div>
-    <div class="sheet-attack-list">${initiativeRow}${attackRows}</div><p class="field-hint">Initiative rolls use REF + 1d10 and the modifier above. The GM confirms hits; damage is never applied automatically.</p>
+    <div class="sheet-attack-list">${initiativeRow}${attackRows}</div><p class="field-hint">Initiative uses REF + 1d10. Weapon hits use REF + the matching skill + WA; tracked magazines spend rounds when fired and reload from matching ammunition in inventory. The GM confirms hits; damage is never applied automatically.</p>
   </div></section>`;
 }
 
@@ -1037,10 +921,21 @@ function renderSkillsPanel(character) {
   return `<section class="panel sheet-skills-panel"><div class="panel-head"><h2>Skills</h2></div><div class="panel-body"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${skillTabs}</div><div class="sheet-skills-groups">${activeSkills}</div></div></section>`;
 }
 
+function updateSheetLayoutPreference() {
+  const content = document.getElementById("sheet-content");
+  const toggle = document.getElementById("sheet-layout-toggle");
+  if (!content || !toggle) return;
+  const isClassic = sheetLayout === "classic";
+  content.classList.toggle("sheet-layout-classic", isClassic);
+  toggle.setAttribute("aria-pressed", String(isClassic));
+  toggle.textContent = `Classic layout: ${isClassic ? "on" : "off"}`;
+}
+
 function renderSheet() {
   const selector = document.getElementById("sheet-character");
   const target = document.getElementById("sheet-content");
   if (!selector || !target) return;
+  updateSheetLayoutPreference();
   const previous = selectedSheetCharacterId || selector.value;
   selector.innerHTML = workspace.characters.map(character => `<option value="${escapeHtml(character.id)}">${escapeHtml(character.name)}</option>`).join("");
   const character = workspace.characters.find(item => item.id === previous) || workspace.characters[0];
@@ -1463,7 +1358,28 @@ function performSheetSkillRoll(characterId, requestedSkill = "", requestedAttrib
   });
 }
 
-function performSheetAttackRoll(button) {
+async function persistWeaponInventory(character, inventory, migratedGearIds = []) {
+  try {
+    const response = await apiRequest(`/api/characters/${encodeURIComponent(character.id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ ...character, inventory })
+    });
+    const savedCharacter = normalizeCharacter(response.character);
+    workspace.characters = workspace.characters.map(item => item.id === savedCharacter.id ? savedCharacter : item);
+    workspace.gear = workspace.gear.filter(item => !migratedGearIds.includes(item.id));
+    if (signedInAccount) signedInAccount.characters = workspace.characters;
+    workspace.demo = false;
+    saveWorkspace();
+    renderSheet();
+    return savedCharacter;
+  } catch (error) {
+    console.error("Could not save weapon ammunition.", error);
+    showToast(error.message || "Could not save weapon ammunition.", true);
+    return null;
+  }
+}
+
+async function performSheetAttackRoll(button) {
   const character = selectedCharacter(button.dataset.characterId);
   const item = itemsForCharacter(character).find(entry => entry.id === button.dataset.id);
   if (!character || !item || !item.equipped || !isWeaponActionItem(item)) {
@@ -1472,23 +1388,67 @@ function performSheetAttackRoll(button) {
   const combat = weaponCombatData(item);
   const input = document.getElementById(button.dataset.roundsInputId);
   const roundsFired = Number(input?.value);
-  const maximumRounds = combat.rateOfFire || combat.capacity || 1;
-  if (!Number.isInteger(roundsFired) || roundsFired < 1 || roundsFired > maximumRounds) {
-    return showToast(`Rounds fired must be from 1 to ${maximumRounds}.`, true);
+  const fireResult = consumeWeaponRounds(item, roundsFired);
+  if (fireResult.error) return showToast(fireResult.error, true);
+  const operationKey = `${character.id}:${item.id}`;
+  if (usesAmmunition(item) && weaponOperationsInFlight.has(operationKey)) return;
+  let weapon = item;
+  if (usesAmmunition(item)) {
+    weaponOperationsInFlight.add(operationKey);
+    try {
+      const inventory = [...(character.inventory || [])];
+      const weaponIndex = inventory.findIndex(entry => entry.id === item.id);
+      if (weaponIndex >= 0) inventory[weaponIndex] = fireResult.item;
+      else inventory.push(fireResult.item);
+      const saved = await persistWeaponInventory(character, inventory, [item.id]);
+      if (!saved) return;
+      weapon = saved.inventory.find(entry => entry.id === item.id) || fireResult.item;
+    } finally {
+      weaponOperationsInFlight.delete(operationKey);
+    }
   }
   const skill = weaponSkillFor(character, item);
   const base = Number(character.attributes?.REF || 0);
-  const bonus = base + skill.value;
+  const bonus = weaponAttackTotal(0, base, skill.value, item);
   const die = rollD10();
-  const total = die + bonus;
+  const total = weaponAttackTotal(die, base, skill.value, item);
   const skillBreakdown = skill.chipBonus ? `${skill.naturalValue} natural + ${skill.chipBonus} chip = ${skill.value}` : `${skill.value}`;
-  const result = `Hit roll with ${item.name}: d10 ${die} + ${skill.name} ${skillBreakdown} + REF ${base} = ${total}. The GM confirms whether it hits; damage is handled by the character who is hit.`;
+  const accuracyBreakdown = combat.weaponAccuracy ? ` + WA ${combat.weaponAccuracy}` : "";
+  const ammoRemaining = usesAmmunition(weapon) ? ` ${loadedRoundsFor(weapon)}/${combat.capacity} rounds remain loaded.` : "";
+  const result = `Hit roll with ${item.name}: d10 ${die} + ${skill.name} ${skillBreakdown} + REF ${base}${accuracyBreakdown} = ${total}.${ammoRemaining} The GM confirms whether it hits; damage is handled by the character who is hit.`;
   rememberSheetAction(character, result);
   publishCharacterRoll(character, {
-    rollKind: "attack", skill: skill.name, attribute: "REF", base, skillValue: skill.value, modifier: 0,
+    rollKind: "attack", skill: skill.name, attribute: "REF", base, skillValue: skill.value, modifier: combat.weaponAccuracy,
     die, total, target: 0, success: false, weapon: item.name, ammoType: combat.ammoType,
     damageFormula: combat.damageFormula, roundsFired
   });
+}
+
+async function reloadSheetWeapon(button) {
+  const character = selectedCharacter(button.dataset.characterId);
+  const item = itemsForCharacter(character).find(entry => entry.id === button.dataset.id);
+  if (!character || !item || !item.equipped || !isWeaponActionItem(item)) {
+    return showToast("Equip a weapon before reloading it.", true);
+  }
+  const operationKey = `${character.id}:${item.id}`;
+  if (weaponOperationsInFlight.has(operationKey)) return;
+  const result = reloadWeapon(item, itemsForCharacter(character));
+  if (result.error) return showToast(result.error, true);
+  weaponOperationsInFlight.add(operationKey);
+  try {
+    const inventory = [...(character.inventory || [])];
+    const upsert = updated => {
+      const index = inventory.findIndex(entry => entry.id === updated.id);
+      if (index >= 0) inventory[index] = updated;
+      else inventory.push(updated);
+    };
+    upsert(result.weapon);
+    upsert(result.ammo);
+    const saved = await persistWeaponInventory(character, inventory, [item.id, result.ammo.id]);
+    if (saved) showToast(`${item.name} reloaded with ${result.rounds} ${result.ammoType || weaponCombatData(item).ammoType} round${result.rounds === 1 ? "" : "s"}.`);
+  } finally {
+    weaponOperationsInFlight.delete(operationKey);
+  }
 }
 
 function performSheetDamageRoll(button) {
@@ -1834,7 +1794,12 @@ function showView(view) {
     panel.hidden = !active;
     panel.classList.toggle("active", active);
   });
-  document.querySelectorAll(".nav-item").forEach(button => button.classList.toggle("active", button.dataset.view === view));
+  document.querySelectorAll(".nav-item").forEach(button => {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   document.getElementById("crumb-current").textContent = VIEWS[view];
 }
 
@@ -1846,7 +1811,11 @@ function field(label, name, value = "", options = {}) {
     return `<label class="form-field${full}"><span class="field-label">${escapeHtml(label)}</span><textarea class="field-textarea" name="${escapeHtml(name)}" ${required} ${options.rows ? `rows="${options.rows}"` : ""}>${escapeHtml(value)}</textarea>${hint}</label>`;
   }
   const type = options.type || "text";
-  const attrs = options.min != null ? `min="${options.min}"` : "";
+  const attrs = [
+    options.min != null ? `min="${options.min}"` : "",
+    options.max != null ? `max="${options.max}"` : "",
+    options.step != null ? `step="${options.step}"` : ""
+  ].filter(Boolean).join(" ");
   return `<label class="form-field${full}"><span class="field-label">${escapeHtml(label)}</span><input class="field-input" type="${type}" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${required} ${attrs}>${hint}</label>`;
 }
 
@@ -2054,8 +2023,15 @@ function openGearForm(item, characterId = "") {
   const body = `${field("Item name", "name", item?.name ?? "", { required: true })}${selectField("Category", "category", categories, item?.category ?? "Equipment")}
     ${field("Quantity", "quantity", item?.quantity ?? 1, { type: "number", min: 0, required: true })}${selectField("Assign to", "characterId", owners, item?.characterId ?? characterId, true)}
     ${field("Description", "description", item?.description ?? item?.details ?? "", { full: true, textarea: true, hint: "A short custom description or table-specific information." })}
-    ${field("Weapon type", "weaponType", item?.weaponType ?? "", { hint: "Optional; e.g. Heavy handgun." })}
-    ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Optional table-entered stats, kept as custom data." })}
+    <section class="form-field full" data-legacy-weapon-fields>
+      <div class="form-grid">${field("Weapon type", "weaponType", item?.weaponType ?? "", { hint: "Optional; e.g. Heavy handgun." })}
+      ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Optional table-entered stats, kept as custom data." })}</div>
+    </section>
+    ${cyberwareWeaponProfileFields(item, cyberwareAmmoTypes())}
+    <input type="hidden" name="legacyWeaponType" value="${escapeHtml(item?.weaponType ?? "")}">
+    <input type="hidden" name="legacyWeaponStats" value="${escapeHtml(item?.weaponStats ?? "")}">
+    <input type="hidden" name="legacyAmmoType" value="${escapeHtml(item?.ammoType ?? "")}">
+    <input type="hidden" name="legacyAmmoLoaded" value="${escapeHtml(item?.ammoLoaded ?? "")}">
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
     ${field("Humanity loss per install", "humanityLoss", item?.humanityLoss ?? "", { hint: "For example 0.5, 1D6/2, or 1D6/pair. Blank cyberware values default to 5." })}
     ${field("Humanity cost note", "humanityCost", item?.humanityCost ?? "", { hint: "Optional table notation or dice formula for reference." })}
@@ -2067,13 +2043,14 @@ function openGearForm(item, characterId = "") {
   if (isEditing) form.dataset.id = item.id;
   form.dataset.catalogId = item?.catalogId ?? "";
   form.dataset.originalCharacterId = characterId;
+  updateGearItemFields(form);
   dialog.showModal();
   dialogContent.querySelector('[name="name"]').focus();
 }
 
 function openAuthForm(mode = "login") {
   const isRegister = mode === "register";
-  const body = `${field("Username", "username", "", { required: true, hint: "3–24 letters, numbers, or underscores." })}<label class="form-field"><span class="field-label">Password</span><input class="field-input" type="password" name="password" minlength="12" maxlength="200" required autocomplete="${isRegister ? "new-password" : "current-password"}"><span class="field-hint">At least 12 characters.</span></label><div class="form-field full auth-switch"><span>${isRegister ? "Already have an account?" : "New to Afterdark?"}</span><button class="text-button" type="button" data-action="switch-auth-mode" data-mode="${isRegister ? "login" : "register"}">${isRegister ? "Sign in" : "Create account"}</button></div>`;
+  const body = `${field("Username", "username", "", { required: isRegister, hint: "3–24 letters, numbers, or underscores." })}<label class="form-field"><span class="field-label">Password</span><input class="field-input" type="password" name="password" ${isRegister ? 'minlength="12" required' : ""} maxlength="200" autocomplete="${isRegister ? "new-password" : "current-password"}"><span class="field-hint">${isRegister ? "At least 12 characters." : "Enter your account password."}</span></label><div class="form-field full auth-switch"><span>${isRegister ? "Already have an account?" : "New to Afterdark?"}</span><button class="text-button" type="button" data-action="switch-auth-mode" data-mode="${isRegister ? "login" : "register"}">${isRegister ? "Sign in" : "Create account"}</button></div>`;
   dialogContent.innerHTML = formShell(isRegister ? "Create your account" : "Sign in", "Your characters and portrait uploads follow your account.", "auth-form", body, isRegister ? "Create account" : "Sign in");
   dialogContent.querySelector("form").dataset.mode = mode;
   dialog.showModal();
@@ -2081,19 +2058,161 @@ function openAuthForm(mode = "login") {
 }
 
 function openCatalogItemForm(item) {
-  const body = `${field("Item name", "name", item?.name ?? "", { required: true })}${field("Category", "category", item?.category ?? "Other")}
-    ${field("Weapon type", "weaponType", item?.weaponType ?? "", { hint: "For weapon entries, e.g. Heavy handgun or Medium handgun." })}
-    ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Enter table-specific stat values; this is custom user data." })}
+  const categories = ["Weapon", "Ammo", "Cyberware", "Gear", "Style", "Other"].map(value => ({ value, label: value }));
+  const weaponTypes = WEAPON_TYPE_OPTIONS.map(value => ({ value, label: value }));
+  const concealabilityOptions = WEAPON_CONCEALABILITY_OPTIONS.map(value => ({
+    value,
+    label: ({ P: "P · Pocket", J: "J · Jacket", L: "L · Long coat", N: "N · Not concealable" })[value]
+  }));
+  const reliabilityOptions = WEAPON_RELIABILITY_OPTIONS.map(value => ({ value, label: value }));
+  const damageDieOptions = WEAPON_DAMAGE_DIE_OPTIONS.map(value => ({ value: String(value), label: `d${value}` }));
+  const ammoTypes = cyberwareAmmoTypes();
+  const weaponFields = `<section class="form-field full weapon-creator-fields" data-catalog-weapon-fields hidden>
+    <span class="field-label">CUSTOM WEAPON</span>
+    <div class="form-grid">
+      ${selectField("Weapon type", "weaponType", weaponTypes, item?.weaponType ?? "Handgun")}
+      <label class="form-field"><span class="field-label">Ammo type</span><input class="field-input" type="text" name="ammoType" list="catalog-ammo-types" maxlength="40" value="${escapeHtml(item?.ammoType ?? "")}"><datalist id="catalog-ammo-types">${ammoTypes.map(type => `<option value="${escapeHtml(type)}">`).join("")}</datalist><span class="field-hint">Enter a new type to add it to the catalog automatically. Leave blank for melee weapons.</span></label>
+      ${selectField("Concealability", "concealability", concealabilityOptions, item?.concealability ?? "J")}
+      ${field("Weapon Accuracy (WA)", "weaponAccuracy", item?.weaponAccuracy ?? "0", { type: "number", min: -3, max: 3, step: 1, required: true })}
+      ${field("Shots", "shots", item?.shots ?? "10", { type: "number", min: 0, max: 9999, step: 1, required: true })}
+      ${field("Rate of Fire", "rateOfFire", item?.rateOfFire ?? "2", { type: "number", min: 1, max: 999, step: 1, required: true })}
+      ${field("Damage dice", "damageDice", item?.damageDice ?? "1", { type: "number", min: 1, max: 100, step: 1, required: true })}
+      ${selectField("Damage die type", "damageDieType", damageDieOptions, String(item?.damageDieType ?? 6))}
+      ${field("Damage bonus (optional)", "damageBonus", item?.damageBonus ?? "0", { type: "number", min: -999, max: 999, step: 1 })}
+      ${selectField("Reliability", "reliability", reliabilityOptions, item?.reliability ?? "ST")}
+      ${field("Range (mm)", "rangeMm", item?.rangeMm ?? "", { type: "number", min: 0, max: 99999999, step: 1, required: true })}
+    </div>
+  </section>`;
+  const body = `${field("Item name", "name", item?.name ?? "", { required: true })}
+    ${selectField("Category", "category", categories, item?.category ?? "Other")}
+    ${weaponFields}
+    ${cyberwareWeaponProfileFields(item, ammoTypes)}
     ${field("Description", "description", item?.description ?? "", { full: true, textarea: true })}
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
-    ${field("Humanity loss per install", "humanityLoss", item?.humanityLoss ?? "", { hint: "For example 0.5, 1D6/2, or 1D6/pair. Blank cyberware values default to 5." })}
-    ${field("Humanity cost note", "humanityCost", item?.humanityCost ?? "", { hint: "Optional table notation or dice formula for reference." })}
-    ${field("Skill chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Optional; use for a cyberware chip that grants a skill." })}${field("Price per chip level", "pricePerLevel", item?.pricePerLevel ?? "", { type: "number", min: 1, hint: "Optional numeric Eddies price for each chip level." })}${field("Flat purchase price", "purchaseCost", item?.purchaseCost ?? "", { type: "number", min: 1, hint: "Optional fixed price for a non-levelled catalog item." })}
+    <section class="form-field full nonweapon-catalog-fields" data-nonweapon-catalog-fields>
+      <div class="form-grid">
+        ${field("Humanity loss per install", "humanityLoss", item?.humanityLoss ?? "", { hint: "For example 0.5, 1D6/2, or 1D6/pair. Blank cyberware values default to 5." })}
+        ${field("Humanity cost note", "humanityCost", item?.humanityCost ?? "", { hint: "Optional table notation or dice formula for reference." })}
+        ${field("Skill chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Optional; use for a cyberware chip that grants a skill." })}
+        ${field("Price per chip level", "pricePerLevel", item?.pricePerLevel ?? "", { type: "number", min: 1, hint: "Optional numeric Eddies price for each chip level." })}
+        ${field("Flat purchase price", "purchaseCost", item?.purchaseCost ?? "", { type: "number", min: 1, hint: "Optional fixed price for a non-levelled catalog item." })}
+      </div>
+    </section>
     ${field("Source citation", "sourceReference", item?.sourceReference ?? "", { full: true, hint: "Optional book and page reference." })}
     ${field("Custom notes", "customNotes", item?.customNotes ?? "", { full: true, textarea: true, hint: "Catalog entries are original/custom data. Add the source item list when you are ready." })}`;
   dialogContent.innerHTML = formShell("Add a catalog item", "Add one custom record to the server's item catalog.", "catalog-item-form", body, "Save catalog item");
+  updateCatalogWeaponFields(dialogContent.querySelector('form[name="catalog-item-form"]'));
   dialog.showModal();
   dialogContent.querySelector('[name="name"]').focus();
+}
+
+function cyberwareAmmoTypes() {
+  return [...new Set((workspace.catalog || [])
+    .filter(entry => String(entry.category || "").toLowerCase() === "ammo")
+    .map(entry => entry.name))];
+}
+
+function cyberwareWeaponProfileFields(item, ammoTypes) {
+  const combat = weaponCombatData(item || {});
+  const damage = parseDamageFormula(combat.damageFormula);
+  const weaponTypes = [
+    { value: "Heavy Weapons", label: "Heavy Weapons" },
+    ...WEAPON_TYPE_OPTIONS.map(value => ({ value, label: value }))
+  ];
+  return `<section class="form-field full cyberware-weapon-section" data-cyberware-weapon-section hidden>
+    <label class="chip-socket-toggle"><input type="checkbox" name="cyberwareWeaponEnabled" ${damage ? "checked" : ""}><span>Cyberware can make attacks</span></label>
+    <span class="field-hint">Enable this for attack-capable cyberware. Damage is required; all other combat fields are optional. If no attack type is selected, attack rolls use Melee skill.</span>
+    <div data-cyberware-combat-fields ${damage ? "" : "hidden"}>
+      <div class="form-grid">
+        ${selectField("Attack type (optional)", "cyberwareWeaponType", weaponTypes, item?.weaponType ?? "", true)}
+        <label class="form-field"><span class="field-label">Ammo type (optional)</span><input class="field-input" type="text" name="cyberwareAmmoType" list="cyberware-ammo-types" maxlength="40" value="${escapeHtml(item?.ammoType || combat.ammoType)}"><datalist id="cyberware-ammo-types">${ammoTypes.map(type => `<option value="${escapeHtml(type)}">`).join("")}</datalist></label>
+        ${selectField("Concealability (optional)", "cyberwareConcealability", WEAPON_CONCEALABILITY_OPTIONS.map(value => ({
+          value,
+          label: ({ P: "P · Pocket", J: "J · Jacket", L: "L · Long coat", N: "N · Not concealable" })[value]
+        })), combat.concealability, true)}
+        ${field("Weapon Accuracy (optional)", "cyberwareWeaponAccuracy", item?.weaponAccuracy ?? (combat.weaponAccuracy || ""), { type: "number", min: -3, max: 3, step: 1 })}
+        ${field("Shots (optional)", "cyberwareShots", item?.shots ?? (combat.capacity || ""), { type: "number", min: 0, max: 9999, step: 1 })}
+        ${field("Rate of Fire (optional)", "cyberwareRateOfFire", item?.rateOfFire ?? (combat.rateOfFire || ""), { type: "number", min: 1, max: 999, step: 1 })}
+        ${field("Damage dice", "cyberwareDamageDice", damage?.count ?? "", { type: "number", min: 1, max: 100, step: 1 })}
+        ${selectField("Damage die type", "cyberwareDamageDieType", WEAPON_DAMAGE_DIE_OPTIONS.map(value => ({ value: String(value), label: `d${value}` })), damage ? String(damage.sides) : "", true)}
+        ${field("Damage bonus (optional)", "cyberwareDamageBonus", damage?.modifier || "", { type: "number", min: -999, max: 999, step: 1 })}
+        ${selectField("Reliability (optional)", "cyberwareReliability", WEAPON_RELIABILITY_OPTIONS.map(value => ({ value, label: value })), combat.reliability, true)}
+        ${field("Range in mm (optional)", "cyberwareRangeMm", item?.rangeMm ?? (combat.rangeMm || ""), { type: "number", min: 0, max: 99999999, step: 1 })}
+      </div>
+    </div>
+  </section>`;
+}
+
+function updateCatalogWeaponFields(form) {
+  if (!form) return;
+  const isWeapon = String(form.elements.category.value).toLowerCase() === "weapon";
+  const isCyberware = String(form.elements.category.value).toLowerCase() === "cyberware";
+  const weaponFields = form.querySelector("[data-catalog-weapon-fields]");
+  const nonweaponFields = form.querySelector("[data-nonweapon-catalog-fields]");
+  const legacyWeaponFields = form.querySelector("[data-legacy-weapon-fields]");
+  weaponFields.hidden = !isWeapon;
+  nonweaponFields.hidden = isWeapon;
+  if (legacyWeaponFields) {
+    legacyWeaponFields.hidden = isCyberware;
+    legacyWeaponFields.querySelectorAll("input, select, textarea").forEach(control => {
+      control.disabled = isCyberware;
+    });
+  }
+  weaponFields.querySelectorAll("input, select").forEach(control => {
+    control.disabled = !isWeapon;
+    control.required = isWeapon && !["ammoType", "damageBonus"].includes(control.name);
+  });
+  const ammoField = form.elements.ammoType;
+  if (isWeapon) {
+    ammoField.required = form.elements.weaponType.value !== "Melee";
+    if (form.elements.weaponType.value === "Melee") ammoField.value = "";
+  }
+  updateCyberwareWeaponFields(form, isCyberware);
+}
+
+function updateGearItemFields(form) {
+  if (!form) return;
+  const isCyberware = String(form.elements.category.value).toLowerCase() === "cyberware";
+  const legacyFields = form.querySelector("[data-legacy-weapon-fields]");
+  legacyFields.hidden = isCyberware;
+  legacyFields.querySelectorAll("input, select, textarea").forEach(control => {
+    control.disabled = isCyberware;
+  });
+  updateCyberwareWeaponFields(form, isCyberware);
+}
+
+function updateCyberwareWeaponFields(form, isCyberware) {
+  const section = form.querySelector("[data-cyberware-weapon-section]");
+  const checkbox = form.elements.cyberwareWeaponEnabled;
+  section.hidden = !isCyberware;
+  checkbox.disabled = !isCyberware;
+  const active = isCyberware && checkbox.checked;
+  const fields = form.querySelector("[data-cyberware-combat-fields]");
+  fields.hidden = !active;
+  fields.querySelectorAll("input, select").forEach(control => {
+    control.disabled = !active;
+    control.required = active && ["cyberwareDamageDice", "cyberwareDamageDieType"].includes(control.name);
+  });
+}
+
+function cyberwareWeaponDataFromForm(data) {
+  const optionalNumber = name => {
+    const raw = String(data.get(name) ?? "").trim();
+    return raw ? Number(raw) : null;
+  };
+  return {
+    weaponType: String(data.get("cyberwareWeaponType") || "").trim(),
+    ammoType: String(data.get("cyberwareAmmoType") || "").trim(),
+    concealability: String(data.get("cyberwareConcealability") || ""),
+    weaponAccuracy: optionalNumber("cyberwareWeaponAccuracy"),
+    shots: optionalNumber("cyberwareShots"),
+    rateOfFire: optionalNumber("cyberwareRateOfFire"),
+    damageDice: optionalNumber("cyberwareDamageDice"),
+    damageDieType: optionalNumber("cyberwareDamageDieType"),
+    damageBonus: optionalNumber("cyberwareDamageBonus"),
+    reliability: String(data.get("cyberwareReliability") || ""),
+    rangeMm: optionalNumber("cyberwareRangeMm")
+  };
 }
 
 function openSessionForm(campaign, session) {
@@ -2137,6 +2256,7 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
       body: JSON.stringify(character)
     });
     const savedCharacter = normalizeCharacter(response.character);
+    dialog.close();
     const portrait = form?.querySelector('[name="portrait"]')?.files?.[0];
     if (portrait) {
       try {
@@ -2161,7 +2281,6 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
     const locallySaved = saveWorkspace();
     if (!locallySaved) renderAll();
     if (previous) recordCharacterHealthChange(previous, savedCharacter);
-    dialog.close();
     updateAccountControls();
     if (showSavedMessage) {
       showToast(portraitUploadError
@@ -2300,8 +2419,11 @@ async function addCatalogItem(item) {
   try {
     const result = await apiRequest("/api/catalog", { method: "POST", body: JSON.stringify(item) });
     workspace.catalog.push(result.item);
+    for (const createdItem of result.createdItems || []) {
+      if (!workspace.catalog.some(entry => entry.id === createdItem.id)) workspace.catalog.push(createdItem);
+    }
     dialog.close();
-    showToast(`${result.item.name} added to the catalog.`);
+    showToast(`${result.item.name} added to the catalog.${result.createdItems?.length ? ` ${result.createdItems.map(entry => entry.name).join(", ")} ammunition added too.` : ""}`);
     if (catalogTargetCharacterId) openCatalogSearch(catalogTargetCharacterId);
   } catch (error) {
     showToast(error.message || "Could not add that catalog item.", true);
@@ -2313,10 +2435,12 @@ async function addCatalogItemToCharacter(characterId, catalogId) {
   const catalogItem = workspace.catalog?.find(item => item.id === catalogId);
   if (!character || !catalogItem) return showToast("Choose an item from the catalog first.", true);
   if (!signedInAccount) return showToast("Sign in to save character inventory.", true);
+  const combat = weaponCombatData(catalogItem);
   const updatedCharacter = { ...character, inventory: [...(character.inventory || []), {
     id: makeId(), catalogId: catalogItem.id, name: catalogItem.name, category: catalogItem.category, quantity: 1, equipped: false,
     chipSkill: catalogItem.chipSkill || "", chipBonus: null, socketed: false,
-    description: catalogItem.description, weaponType: catalogItem.weaponType, weaponStats: catalogItem.weaponStats,
+    description: catalogItem.description, weaponType: catalogItem.weaponType, ammoType: combat.ammoType,
+    ammoLoaded: usesAmmunition(catalogItem) ? combat.capacity : null, weaponStats: catalogItem.weaponStats,
     weight: catalogItem.weight, cost: catalogItem.cost, humanityCost: catalogItem.humanityCost, humanityLoss: humanityLossForItem(catalogItem),
     humanityCharged: false, humanityLossPaid: 0,
     sourceReference: catalogItem.sourceReference, customNotes: catalogItem.customNotes
@@ -2324,7 +2448,61 @@ async function addCatalogItemToCharacter(characterId, catalogId) {
   const saved = await saveCharacterToAccount(updatedCharacter, character, null, false);
   if (saved) {
     if (catalogDialog.open) catalogDialog.close();
+    renderSheet();
     showToast(`${catalogItem.name} added to ${character.name}'s inventory.`);
+  }
+}
+
+function openAmmoAddForm(characterId, catalogId) {
+  const character = selectedCharacter(characterId);
+  const item = workspace.catalog?.find(entry => entry.id === catalogId);
+  if (!character || !item || String(item.category || "").toLowerCase() !== "ammo") {
+    return showToast("Choose an ammunition type from the catalog first.", true);
+  }
+  if (!signedInAccount) return showToast("Sign in to save character ammunition.", true);
+  dialogContent.innerHTML = formShell(
+    `Add ${item.name} ammunition`,
+    `Enter the number of bullets to add to ${character.name}'s inventory.`,
+    "ammo-add-form",
+    `${field("Bullets to add", "quantity", "1", { type: "number", min: 1, max: 9999, step: 1, required: true })}`,
+    "Add ammunition"
+  );
+  const form = dialogContent.querySelector('form[name="ammo-add-form"]');
+  form.dataset.characterId = character.id;
+  form.dataset.catalogItemId = item.id;
+  if (catalogDialog.open) catalogDialog.close();
+  dialog.showModal();
+  form.elements.quantity.focus();
+}
+
+async function addAmmoToCharacter(form) {
+  if (!signedInAccount) return showToast("Sign in to save character ammunition.", true);
+  const character = selectedCharacter(form.dataset.characterId);
+  const item = workspace.catalog?.find(entry => entry.id === form.dataset.catalogItemId);
+  const quantity = readOptionalFormInteger(new FormData(form), "quantity", 9999);
+  if (!character || !item || String(item.category || "").toLowerCase() !== "ammo") {
+    return showToast("The selected character or ammunition type is no longer available.", true);
+  }
+  if (!Number.isInteger(quantity) || quantity < 1) return showToast("Enter a whole number of bullets from 1 to 9,999.", true);
+  const inventory = [...(character.inventory || [])];
+  const existing = inventory.find(entry =>
+    String(entry.category || "").toLowerCase() === "ammo"
+    && String(entry.ammoType || entry.name || "").trim().toLowerCase() === item.name.toLowerCase()
+  );
+  const total = Number(existing?.quantity || 0) + quantity;
+  if (total > 9999) return showToast("Ammunition inventory cannot exceed 9,999 bullets of one type.", true);
+  if (existing) {
+    const index = inventory.findIndex(entry => entry.id === existing.id);
+    inventory[index] = { ...existing, quantity: total };
+  } else {
+    inventory.push({
+      id: makeId(), catalogId: item.id, name: item.name, category: "Ammo", ammoType: item.name,
+      quantity, equipped: false, description: item.description || ""
+    });
+  }
+  if (await saveCharacterToAccount({ ...character, inventory }, character, form, false)) {
+    renderSheet();
+    showToast(`${quantity} ${item.name} bullet${quantity === 1 ? "" : "s"} added to inventory.`);
   }
 }
 
@@ -2503,16 +2681,23 @@ async function refreshEnemyTemplates() {
 
 async function submitAccountForm(form) {
   const data = formValues(form);
+  let authenticated = false;
   try {
     const response = await apiRequest(form.dataset.mode === "register" ? "/api/register" : "/api/login", {
       method: "POST",
       body: JSON.stringify({ username: data.get("username"), password: data.get("password") })
     });
-    await loadAuthenticatedData(response.account);
+    authenticated = true;
     dialog.close();
+    await loadAuthenticatedData(response.account);
     showToast(`Signed in as ${response.account.username}.`);
     continuePendingCampaignInvite();
   } catch (error) {
+    if (authenticated) {
+      console.error("Could not load account data after authentication.", error);
+      showToast(`Signed in, but account data could not be loaded: ${error.message || "unknown error"}`, true);
+      return;
+    }
     showToast(error.message || "Could not sign in.", true);
   }
 }
@@ -2592,6 +2777,10 @@ function persistForm(form) {
   }
   if (formType === "catalog-purchase-form") {
     void purchaseCatalogItem(form);
+    return;
+  }
+  if (formType === "ammo-add-form") {
+    void addAmmoToCharacter(form);
     return;
   }
   if (formType === "character-form") {
@@ -2688,6 +2877,11 @@ function persistForm(form) {
     const chipBonus = readOptionalFormInteger(data, "chipBonus", 9999);
     const humanityLoss = String(data.get("humanityLoss") ?? "").trim();
     const socketed = Boolean(data.get("socketed"));
+    let weaponType = String(data.get("weaponType") ?? "").trim();
+    let weaponStats = String(data.get("weaponStats") ?? "").trim();
+    let ammoType = String(data.get("legacyAmmoType") ?? "").trim();
+    const previousAmmoType = ammoType || weaponCombatData({ weaponStats: String(data.get("legacyWeaponStats") ?? "") }).ammoType;
+    let ammoLoaded = storedInventory?.ammoLoaded ?? storedGear?.ammoLoaded ?? null;
     if (chipBonus === undefined) return showToast("Skill-chip bonuses must be whole numbers from 0 to 9,999.", true);
     if (category.toLowerCase() === "cyberware" && !validHumanityLossNotation(humanityLoss || "5")) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
@@ -2696,11 +2890,42 @@ function persistForm(form) {
       return showToast("Skill-chip details can only be saved on cyberware.", true);
     }
     if ((chipBonus != null || socketed) && !chipSkill) return showToast("Enter the skill linked to this chip before setting its bonus or socketing it.", true);
+    if (category.toLowerCase() === "cyberware") {
+      if (data.get("cyberwareWeaponEnabled")) {
+        const cyberwareCombatData = cyberwareWeaponDataFromForm(data);
+        const weaponError = validateCyberwareWeapon(cyberwareCombatData);
+        if (weaponError) return showToast(weaponError, true);
+        weaponType = cyberwareCombatData.weaponType;
+        ammoType = cyberwareCombatData.ammoType;
+        weaponStats = formatWeaponStats(cyberwareCombatData);
+      } else {
+        const legacyWeaponType = String(data.get("legacyWeaponType") ?? "").trim();
+        const legacyWeaponStats = String(data.get("legacyWeaponStats") ?? "").trim();
+        if (parseDamageFormula(weaponCombatData({ weaponStats: legacyWeaponStats }).damageFormula)) {
+          weaponType = "";
+          weaponStats = "";
+          ammoType = "";
+          ammoLoaded = null;
+        } else {
+          weaponType = legacyWeaponType;
+          weaponStats = legacyWeaponStats;
+        }
+      }
+    } else {
+      const weaponCombat = weaponCombatData({ category, weaponType, weaponStats });
+      ammoType = weaponCombat.ammoType;
+    }
+    const updatedCombatItem = { category, weaponType, weaponStats, ammoType };
+    if (category.toLowerCase() === "cyberware"
+      && data.get("cyberwareWeaponEnabled")
+      && (!usesAmmunition(updatedCombatItem) || previousAmmoType.toLowerCase() !== ammoType.toLowerCase())) {
+      ammoLoaded = null;
+    }
     const item = {
       id, name, category, quantity: Math.max(0, Number(data.get("quantity") || 0)),
       characterId: String(data.get("characterId") ?? ""), description: String(data.get("description") ?? "").trim(),
       details: String(data.get("description") ?? "").trim(), weight: String(data.get("weight") ?? "").trim(),
-      weaponType: String(data.get("weaponType") ?? "").trim(), weaponStats: String(data.get("weaponStats") ?? "").trim(),
+      weaponType, weaponStats, ammoType, ammoLoaded,
       cost: String(data.get("cost") ?? "").trim(), humanityCost: String(data.get("humanityCost") ?? "").trim(),
       humanityLoss: category.toLowerCase() === "cyberware" ? humanityLoss || "5" : "0",
       customNotes: String(data.get("customNotes") ?? "").trim(),
@@ -2722,6 +2947,7 @@ function persistForm(form) {
       const inventoryItem = {
         id: item.id, catalogId: item.catalogId, name: item.name, category: item.category, quantity: item.quantity,
         description: item.description, weaponType: item.weaponType, weaponStats: item.weaponStats,
+        ammoType: item.ammoType, ammoLoaded: item.ammoLoaded,
         weight: item.weight, cost: item.cost, humanityCost: item.humanityCost,
         humanityLoss: item.humanityLoss,
         humanityCharged: item.humanityCharged, humanityLossPaid: item.humanityLossPaid,
@@ -2759,10 +2985,37 @@ function persistForm(form) {
     if (category.toLowerCase() === "cyberware" && !validHumanityLossNotation(humanityLoss || "5")) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
     }
+    let weaponData = null;
+    let cyberwareCombatData = null;
+    if (category.toLowerCase() === "weapon") {
+      weaponData = {
+        weaponType: String(data.get("weaponType") || "").trim(),
+        ammoType: String(data.get("ammoType") || "").trim(),
+        concealability: String(data.get("concealability") || ""),
+        weaponAccuracy: Number(data.get("weaponAccuracy")),
+        shots: Number(data.get("shots")),
+        rateOfFire: Number(data.get("rateOfFire")),
+        damageDice: Number(data.get("damageDice")),
+        damageDieType: Number(data.get("damageDieType")),
+        damageBonus: data.get("damageBonus") === "" ? 0 : Number(data.get("damageBonus")),
+        reliability: String(data.get("reliability") || ""),
+        rangeMm: Number(data.get("rangeMm"))
+      };
+      if (weaponData.weaponType === "Melee") weaponData.ammoType = "";
+      const weaponError = validateCustomWeapon(weaponData);
+      if (weaponError) return showToast(weaponError, true);
+    }
+    if (category.toLowerCase() === "cyberware" && data.get("cyberwareWeaponEnabled")) {
+      cyberwareCombatData = cyberwareWeaponDataFromForm(data);
+      const weaponError = validateCyberwareWeapon(cyberwareCombatData);
+      if (weaponError) return showToast(weaponError, true);
+    }
     void addCatalogItem({
       name, category, humanityLoss: category.toLowerCase() === "cyberware" ? humanityLoss || "5" : "0",
       description: String(data.get("description") || "").trim(),
-      weaponType: String(data.get("weaponType") || "").trim(), weaponStats: String(data.get("weaponStats") || "").trim(),
+      weaponType: weaponData?.weaponType || cyberwareCombatData?.weaponType || "",
+      ammoType: weaponData?.ammoType || cyberwareCombatData?.ammoType || "",
+      weaponStats: weaponData ? formatWeaponStats(weaponData) : cyberwareCombatData ? formatWeaponStats(cyberwareCombatData) : "",
       weight: String(data.get("weight") || "").trim(), cost: String(data.get("cost") || "").trim(),
       humanityCost: String(data.get("humanityCost") || "").trim(),
       chipSkill: String(data.get("chipSkill") || "").trim(), pricePerLevel, purchaseCost,
@@ -2979,12 +3232,14 @@ function handleAction(button) {
   if (action === "open-catalog-search") openCatalogSearch(button.dataset.characterId);
   if (action === "close-catalog-search") catalogDialog.close();
   if (action === "open-custom-gear") openForm("gear", "", button.dataset.characterId);
+  if (action === "add-ammo-to-inventory") openAmmoAddForm(button.dataset.characterId || catalogTargetCharacterId, id);
   if (action === "toggle-equipped") void toggleItemEquipped(button.dataset.characterId, id);
   if (action === "toggle-socketed") void toggleSkillChipSocketed(button.dataset.characterId, id);
   if (action === "sheet-skill-roll") performSheetSkillRoll(button.dataset.characterId, button.dataset.skillName, button.dataset.attribute);
   if (action === "sheet-attribute-roll") performSheetAttributeRoll(button.dataset.characterId, button.dataset.attribute);
   if (action === "sheet-initiative-roll") performSheetInitiativeRoll(button.dataset.characterId);
-  if (action === "sheet-attack-roll") performSheetAttackRoll(button);
+  if (action === "sheet-attack-roll") void performSheetAttackRoll(button);
+  if (action === "sheet-reload-weapon") void reloadSheetWeapon(button);
   if (action === "sheet-damage-roll") performSheetDamageRoll(button);
   if (action === "add-catalog-item") {
     void addCatalogItemToCharacter(button.dataset.characterId || catalogTargetCharacterId, id);
@@ -3249,6 +3504,10 @@ document.getElementById("board-connect").addEventListener("click", () => connect
   document.getElementById("board-gm-key").value.trim()
 ));
 document.addEventListener("change", event => {
+  const catalogForm = event.target.closest('form[name="catalog-item-form"]');
+  if (catalogForm && ["category", "weaponType", "cyberwareWeaponEnabled"].includes(event.target.name)) updateCatalogWeaponFields(catalogForm);
+  const gearForm = event.target.closest('form[name="gear-form"]');
+  if (gearForm && ["category", "cyberwareWeaponEnabled"].includes(event.target.name)) updateGearItemFields(gearForm);
   const characterForm = event.target.closest('form[name="character-form"]');
   if (characterForm && ["attributeMethod", "cinematicTier"].includes(event.target.name)) updateAttributeAllocation(characterForm);
   if (characterForm && ["normalSkill", "specialSkill"].includes(event.target.name)) updateSkillAllocation(characterForm);
@@ -3330,4 +3589,15 @@ document.addEventListener("keydown", event => {
 });
 
 renderAll();
+document.getElementById("sheet-layout-toggle").addEventListener("click", () => {
+  sheetLayout = sheetLayout === "classic" ? "modern" : "classic";
+  try {
+    localStorage.setItem(SHEET_LAYOUT_STORAGE_KEY, sheetLayout);
+  } catch (error) {
+    console.error("Could not save the character-sheet layout preference.", error);
+    showToast("Layout changed for this session, but the preference could not be saved.", true);
+  }
+  updateSheetLayoutPreference();
+});
+
 void initializeAccount();

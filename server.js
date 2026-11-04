@@ -1,16 +1,19 @@
 import { createServer } from "node:http";
-import { readFile, mkdir, rename, writeFile, unlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { copyFile, readFile, mkdir, rename, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
+import { isValidHumanityAmount as validHumanityAmount, validHumanityLossNotation as validateHumanityLossNotation } from "./shared/character-domain.js";
+import { migrateStoreData, STORE_SCHEMA_VERSION } from "./server/store-migrations.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(ROOT, "data");
 const DATA_FILE = path.join(DATA_DIR, "campaign-state.json");
-const DEFAULT_CATALOG_FILES = ["weapon-summaries.json", "equipment-summaries.json", "cyberware-summaries.json", "skill-chip-summaries.json"]
+const DEFAULT_CATALOG_FILES = ["weapon-summaries.json", "equipment-summaries.json", "cyberware-summaries.json", "skill-chip-summaries.json", "ammo-summaries.json"]
   .map(file => path.join(ROOT, "catalog", file));
 const PORTRAIT_DIR = path.join(DATA_DIR, "portraits");
 const HOST = process.env.HOST || "127.0.0.1";
@@ -51,7 +54,7 @@ const MIME_TYPES = {
   ".ttf": "font/ttf"
 };
 
-let store = { rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
+let store = { schemaVersion: STORE_SCHEMA_VERSION, rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
 let defaultCatalog = [];
 let saveQueue = Promise.resolve();
 const authAttempts = new Map();
@@ -79,19 +82,8 @@ function validOptionalInteger(value, max) {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= max;
 }
 
-function validHumanityAmount(value, max) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= max
-    && Math.abs(parsed * 2 - Math.round(parsed * 2)) < 1e-8;
-}
-
 function validHumanityLossNotation(value) {
-  const notation = boundedText(value, 40).replace(/\s+/g, "");
-  const fixed = notation.match(/^(\d+(?:\.\d+)?)(?:pts?)?$/i);
-  if (fixed) return validHumanityAmount(Number(fixed[1]), 9999);
-  if (!/^\d+d\d+(?:\+\d+)?(?:\/(?:\d+(?:\.\d+)?|\d+d\d+(?:\+\d+)?|pair))?$/i.test(notation)) return false;
-  const divisor = notation.match(/\/(\d+(?:\.\d+)?)$/);
-  return !divisor || Number(divisor[1]) === 1 || Number(divisor[1]) === 2;
+  return validateHumanityLossNotation(boundedText(value, 40));
 }
 
 function validBodyHealth(value) {
@@ -238,6 +230,8 @@ function sanitizeCharacter(input, existing = {}) {
       chipSkill: boundedText(item?.chipSkill, 80),
       chipBonus: item?.chipBonus == null || item.chipBonus === "" ? null : finiteInteger(item.chipBonus, 0, 0, 9999),
       socketed: Boolean(item?.socketed),
+      ammoType: boundedText(item?.ammoType, 40),
+      ammoLoaded: item?.ammoLoaded == null || item.ammoLoaded === "" ? null : finiteInteger(item.ammoLoaded, 0, 0, 9999),
       description: boundedText(item?.description, 1000),
       weaponType: boundedText(item?.weaponType, 60),
       weaponStats: boundedText(item?.weaponStats, 1000),
@@ -315,6 +309,7 @@ function sanitizeCatalogItem(input) {
     category,
     description: boundedText(input.description, 1000),
     weaponType: boundedText(input.weaponType, 60),
+    ammoType: boundedText(input.ammoType, 40),
     weaponStats: boundedText(input.weaponStats, 1000),
     humanityCost: boundedText(input.humanityCost, 40),
     humanityLoss,
@@ -471,74 +466,84 @@ async function loadDefaultCatalog() {
 }
 
 async function loadStore() {
+  let contents;
   try {
-    const contents = await readFile(DATA_FILE, "utf8");
-    const parsed = JSON.parse(contents);
-    if (!parsed || !parsed.rooms || typeof parsed.rooms !== "object" || Array.isArray(parsed.rooms)) {
-      throw new Error("Campaign state file has an invalid shape.");
-    }
-    const rooms = {};
-    for (const [campaignId, room] of Object.entries(parsed.rooms)) {
-      if (!roomIdIsValid(campaignId) || !room || typeof room !== "object") continue;
-      rooms[campaignId] = {
-        campaignId,
-        name: boundedText(room.name, 120) || "Shared campaign",
-        board: normalizeBoard(room.board),
-        events: Array.isArray(room.events) ? room.events.filter(event => event && typeof event === "object" && typeof event.id === "string").slice(-MAX_EVENTS) : [],
-        updatedAt: boundedText(room.updatedAt, 40) || new Date().toISOString(),
-        ownerUserId: boundedText(room.ownerUserId, 100),
-        gmKeyHash: boundedText(room.gmKeyHash, 128),
-        roster: Array.isArray(room.roster) ? room.roster.filter(item => item && typeof item.characterId === "string").slice(0, 100) : []
-      };
-    }
-    const accounts = parsed.accounts && typeof parsed.accounts === "object" ? Object.fromEntries(
-        Object.entries(parsed.accounts).filter(([, account]) => account && typeof account.username === "string" && Array.isArray(account.characters))
-          .map(([userId, account]) => [userId, {
-            ...account,
-            id: userId,
-            usernameKey: account.usernameKey || account.username.toLowerCase(),
-            characters: account.characters.map(character => sanitizeCharacter(character, character)).filter(Boolean)
-          }])
-      ) : {};
-    const sessions = parsed.sessions && typeof parsed.sessions === "object" ? Object.fromEntries(
-      Object.entries(parsed.sessions).filter(([, session]) => session && Number(session.expiresAt) > Date.now() && accounts[session.userId])
-    ) : {};
-    store = {
-      rooms,
-      accounts,
-      sessions,
-      catalog: Array.isArray(parsed.catalog) ? parsed.catalog.map(sanitizeCatalogItem).filter(Boolean).slice(0, 5000) : [],
-      friendships: Array.isArray(parsed.friendships) ? parsed.friendships.filter(item =>
-        Array.isArray(item.userIds) && item.userIds.length === 2 && item.userIds[0] !== item.userIds[1] &&
-        item.userIds.every(userId => typeof userId === "string" && accounts[userId])
-      ).slice(0, 10000) : [],
-      friendRequests: Array.isArray(parsed.friendRequests) ? parsed.friendRequests.filter(item =>
-        item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
-        item.fromUserId !== item.toUserId && accounts[item.fromUserId] && accounts[item.toUserId]
-      ).slice(0, 10000) : [],
-      directMessages: Array.isArray(parsed.directMessages) ? parsed.directMessages.filter(item =>
-        item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
-        item.fromUserId !== item.toUserId && typeof item.text === "string" && accounts[item.fromUserId] && accounts[item.toUserId]
-      ).slice(-MAX_STORED_DIRECT_MESSAGES) : []
-    };
-    for (const room of Object.values(store.rooms)) {
-      for (const token of room.board.tokens) {
-        if (token.kind !== "character") continue;
-        const owner = ownerAccountOfCharacter(token.characterId);
-        token.portraitUrl = owner?.userId === token.ownerUserId ? publicCharacter(owner.character).portraitUrl : "";
-      }
-    }
+    contents = await readFile(DATA_FILE, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
-      store = { rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
+      store = { schemaVersion: STORE_SCHEMA_VERSION, rooms: {}, accounts: {}, sessions: {}, catalog: [], friendships: [], friendRequests: [], directMessages: [] };
       return;
     }
     throw error;
   }
+  const parsed = JSON.parse(contents);
+  const { data: savedStore, migrated, sourceVersion } = migrateStoreData(parsed);
+  if (!savedStore.rooms || typeof savedStore.rooms !== "object" || Array.isArray(savedStore.rooms)) {
+    throw new Error("Campaign state file has an invalid shape.");
+  }
+  const rooms = {};
+  for (const [campaignId, room] of Object.entries(savedStore.rooms)) {
+    if (!roomIdIsValid(campaignId) || !room || typeof room !== "object") continue;
+    rooms[campaignId] = {
+      campaignId,
+      name: boundedText(room.name, 120) || "Shared campaign",
+      board: normalizeBoard(room.board),
+      events: Array.isArray(room.events) ? room.events.filter(event => event && typeof event === "object" && typeof event.id === "string").slice(-MAX_EVENTS) : [],
+      updatedAt: boundedText(room.updatedAt, 40) || new Date().toISOString(),
+      ownerUserId: boundedText(room.ownerUserId, 100),
+      gmKeyHash: boundedText(room.gmKeyHash, 128),
+      roster: Array.isArray(room.roster) ? room.roster.filter(item => item && typeof item.characterId === "string").slice(0, 100) : []
+    };
+  }
+  const accounts = savedStore.accounts && typeof savedStore.accounts === "object" ? Object.fromEntries(
+      Object.entries(savedStore.accounts).filter(([, account]) => account && typeof account.username === "string" && Array.isArray(account.characters))
+        .map(([userId, account]) => [userId, {
+          ...account,
+          id: userId,
+          usernameKey: account.usernameKey || account.username.toLowerCase(),
+          characters: account.characters.map(character => sanitizeCharacter(character, character)).filter(Boolean)
+        }])
+    ) : {};
+  const sessions = savedStore.sessions && typeof savedStore.sessions === "object" ? Object.fromEntries(
+    Object.entries(savedStore.sessions).filter(([, session]) => session && Number(session.expiresAt) > Date.now() && accounts[session.userId])
+  ) : {};
+  store = {
+    schemaVersion: STORE_SCHEMA_VERSION,
+    rooms,
+    accounts,
+    sessions,
+    catalog: Array.isArray(savedStore.catalog) ? savedStore.catalog.map(sanitizeCatalogItem).filter(Boolean).slice(0, 5000) : [],
+    friendships: Array.isArray(savedStore.friendships) ? savedStore.friendships.filter(item =>
+      Array.isArray(item.userIds) && item.userIds.length === 2 && item.userIds[0] !== item.userIds[1] &&
+      item.userIds.every(userId => typeof userId === "string" && accounts[userId])
+    ).slice(0, 10000) : [],
+    friendRequests: Array.isArray(savedStore.friendRequests) ? savedStore.friendRequests.filter(item =>
+      item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
+      item.fromUserId !== item.toUserId && accounts[item.fromUserId] && accounts[item.toUserId]
+    ).slice(0, 10000) : [],
+    directMessages: Array.isArray(savedStore.directMessages) ? savedStore.directMessages.filter(item =>
+      item && typeof item.id === "string" && typeof item.fromUserId === "string" && typeof item.toUserId === "string" &&
+      item.fromUserId !== item.toUserId && typeof item.text === "string" && accounts[item.fromUserId] && accounts[item.toUserId]
+    ).slice(-MAX_STORED_DIRECT_MESSAGES) : []
+  };
+  for (const room of Object.values(store.rooms)) {
+    for (const token of room.board.tokens) {
+      if (token.kind !== "character") continue;
+      const owner = ownerAccountOfCharacter(token.characterId);
+      token.portraitUrl = owner?.userId === token.ownerUserId ? publicCharacter(owner.character).portraitUrl : "";
+    }
+  }
+  if (migrated) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupFile = path.join(DATA_DIR, `campaign-state.schema-v${sourceVersion}.${timestamp}.${randomUUID()}.bak`);
+    await copyFile(DATA_FILE, backupFile, fsConstants.COPYFILE_EXCL);
+    console.info(`Backed up campaign state before migrating schema v${sourceVersion}.`);
+    await persistStore();
+  }
 }
 
 function persistStore() {
-  const snapshot = JSON.stringify(store);
+  const snapshot = JSON.stringify({ ...store, schemaVersion: STORE_SCHEMA_VERSION });
   saveQueue = saveQueue.then(async () => {
     await mkdir(DATA_DIR, { recursive: true });
     const temporaryFile = `${DATA_FILE}.tmp`;
@@ -855,14 +860,23 @@ async function handleApi(request, response, requestUrl) {
     const input = await readJsonBody(request, 8 * 1024);
     const username = boundedText(input.username, 32);
     const password = typeof input.password === "string" ? input.password : "";
-    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) return jsonResponse(response, 400, { error: "Use a 3–24 character username with letters, numbers, or underscores." });
-    if (password.length < 12 || password.length > 200) return jsonResponse(response, 400, { error: "Password must be at least 12 characters." });
+    const validUsername = /^[A-Za-z0-9_]{3,24}$/.test(username);
+    const validPassword = password.length >= 12 && password.length <= 200;
+    if (pathname === "/api/register") {
+      if (!validUsername) return jsonResponse(response, 400, { error: "Use a 3–24 character username with letters, numbers, or underscores." });
+      if (!validPassword) return jsonResponse(response, 400, { error: "Password must be 12–200 characters." });
+    } else if (!validUsername || !validPassword) {
+      return jsonResponse(response, 401, { error: "Username or password is incorrect." });
+    }
     const usernameKey = username.toLowerCase();
     const found = Object.entries(store.accounts).find(([, account]) => account.usernameKey === usernameKey);
     if (pathname === "/api/register") {
       if (found) return jsonResponse(response, 409, { error: "That username is already in use." });
       const salt = randomBytes(16).toString("hex");
       const passwordHash = (await scrypt(password, salt, 64)).toString("hex");
+      if (Object.values(store.accounts).some(account => account.usernameKey === usernameKey)) {
+        return jsonResponse(response, 409, { error: "That username is already in use." });
+      }
       const userId = randomUUID();
       store.accounts[userId] = { id: userId, username, usernameKey, salt, passwordHash, characters: [] };
       const token = await createSession(userId);
@@ -1132,9 +1146,26 @@ async function handleApi(request, response, requestUrl) {
     if (getCatalogItems().some(existing => catalogKey(existing) === catalogKey(item))) {
       return jsonResponse(response, 409, { error: "That catalog item already exists in this category." });
     }
-    store.catalog.push(item);
+    const createdItems = [item];
+    if (["weapon", "cyberware"].includes(item.category.toLowerCase()) && item.ammoType) {
+      const ammoExists = getCatalogItems().some(existing =>
+        existing.category.toLowerCase() === "ammo" && existing.name.toLowerCase() === item.ammoType.toLowerCase()
+      );
+      if (!ammoExists) {
+        const ammoItem = sanitizeCatalogItem({
+          name: item.ammoType,
+          category: "Ammo",
+          description: `Ammunition type added for ${item.name}.`,
+          createdBy: session.username
+        });
+        if (!ammoItem) return jsonResponse(response, 400, { error: "The ammunition type is invalid." });
+        ammoItem.id = randomUUID();
+        createdItems.push(ammoItem);
+      }
+    }
+    store.catalog.push(...createdItems);
     await persistStore();
-    return jsonResponse(response, 201, { item });
+    return jsonResponse(response, 201, { item, createdItems: createdItems.slice(1) });
   }
 
   if (pathname === "/api/catalog/import") {

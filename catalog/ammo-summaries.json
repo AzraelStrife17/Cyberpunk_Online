@@ -1,0 +1,17 @@
+[
+  {"name":".25","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":".357","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":".38","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":".44","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":".45","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"00","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"5mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"6mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"9mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"10mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"11mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"12mm","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"5.56","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"7.56","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."},
+  {"name":"7.62","category":"Ammo","description":"Ammunition type referenced by the existing weapon catalog."}
+]
