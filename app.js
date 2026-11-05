@@ -69,8 +69,9 @@ const VIEWS = {
   board: "TACTICAL BOARD"
 };
 const makeId = () => globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const BOARD_COLUMNS = 20;
-const BOARD_ROWS = 14;
+const BOARD_COLUMNS = 500;
+const BOARD_ROWS = 500;
+const BOARD_RULER_INTERVAL = 25;
 const BOARD_CELL_SIZE = 32;
 const MAX_CHARACTERS_PER_ACCOUNT = 10;
 const MAX_CAMPAIGN_PLAYERS = 10;
@@ -225,6 +226,7 @@ let activeBoardCampaignName = "";
 let connectionStatus = "OFFLINE";
 let activeGmKey = "";
 let boardState = { tokens: [], terrain: [] };
+let boardZoom = BOARD_CELL_SIZE;
 let roomEvents = [];
 let enemyTemplates = [];
 let sheetActionHistory = {};
@@ -598,6 +600,30 @@ function renderRecentSheetActions(character) {
     : `<p class="field-hint">Recent rolls and finalized health changes will appear here.</p>`;
 }
 
+function renderDiceRoller() {
+  return `<section class="panel sheet-dice-panel"><div class="panel-head"><div><p class="section-kicker">OPEN DICE ROLLER</p><h2>Roll d10s and d6s</h2></div></div><div class="panel-body"><form class="sheet-dice-form" data-dice-roll-form><label><span class="field-label">d10 count</span><input class="field-input" type="number" name="d10Count" min="0" max="1000" step="1" value="1" required></label><label><span class="field-label">d6 count</span><input class="field-input" type="number" name="d6Count" min="0" max="1000" step="1" value="0" required></label><button class="button button-primary" type="submit">Roll dice</button></form><p class="field-hint">Roll any mix of d10s and d6s, up to 1,000 of each per roll.</p><p class="sheet-roll-result" id="sheet-dice-result" aria-live="polite">Results will appear here.</p></div></section>`;
+}
+
+function performFreeDiceRoll(form) {
+  const data = new FormData(form);
+  const d10Count = Number(data.get("d10Count"));
+  const d6Count = Number(data.get("d6Count"));
+  if (!Number.isInteger(d10Count) || !Number.isInteger(d6Count)
+    || d10Count < 0 || d10Count > 1000 || d6Count < 0 || d6Count > 1000
+    || d10Count + d6Count === 0) {
+    showToast("Choose at least one die and no more than 1,000 of each type.", true);
+    return;
+  }
+  const d10s = Array.from({ length: d10Count }, () => rollDie(10));
+  const d6s = Array.from({ length: d6Count }, () => rollDie(6));
+  const total = [...d10s, ...d6s].reduce((sum, roll) => sum + roll, 0);
+  const result = `${d10Count}d10 [${d10s.join(", ") || "—"}] + ${d6Count}d6 [${d6s.join(", ") || "—"}] = ${total}`;
+  const output = document.getElementById("sheet-dice-result");
+  if (output) output.textContent = result;
+  const character = selectedCharacter(selectedSheetCharacterId);
+  if (character) rememberSheetAction(character, `Dice roll: ${result}.`);
+}
+
 function recordCharacterHealthChange(previousCharacter, updatedCharacter) {
   if (previousCharacter?.healthCurrent == null || updatedCharacter.healthCurrent == null) return;
   const delta = Number(updatedCharacter.healthCurrent) - Number(previousCharacter.healthCurrent);
@@ -629,17 +655,17 @@ function characterCard(character) {
     : `<div class="portrait" aria-hidden="true">${escapeHtml(initials(character.name))}</div>`;
   return `<article class="character-card">
     <div class="card-top">
-      <div class="card-person">${portrait}<div><p class="card-kicker">${escapeHtml(character.handle || "NO HANDLE")}</p><h3>${escapeHtml(character.name)}</h3><p>${escapeHtml(character.role || "Role not set")}</p></div></div>
+      <div class="card-person">${portrait}<div><p class="card-kicker">${character.isNpc ? "NPC" : escapeHtml(character.handle || "NO HANDLE")}</p><h3>${escapeHtml(character.name)}</h3><p>${escapeHtml(character.role || "Role not set")}</p></div></div>
       <div class="card-actions">
         <button class="icon-button" type="button" data-action="open-character-sheet" data-id="${escapeHtml(character.id)}" aria-label="Open ${escapeHtml(character.name)} character sheet" title="Character sheet">▣</button>
-        <button class="icon-button" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}" aria-label="Play ${escapeHtml(character.name)} on the tactical board" title="Open tactical board">▦</button>
+        ${character.isNpc ? "" : `<button class="icon-button" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}" aria-label="Play ${escapeHtml(character.name)} on the tactical board" title="Open tactical board">▦</button>`}
         <button class="icon-button" type="button" data-action="duplicate-character" data-id="${escapeHtml(character.id)}" aria-label="Duplicate ${escapeHtml(character.name)}" title="Duplicate">⧉</button>
         <button class="icon-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}" aria-label="Edit ${escapeHtml(character.name)}" title="Edit">✎</button>
         <button class="icon-button" type="button" data-action="delete-character" data-id="${escapeHtml(character.id)}" aria-label="Delete ${escapeHtml(character.name)}" title="Delete">×</button>
       </div>
     </div>
     <div class="card-attrs">${attrCells}</div>
-    <div class="card-bottom"><small>${(character.skills ?? []).length} skills</small><span class="tag tag-neutral">${escapeHtml(character.role || "UNASSIGNED")}</span></div>
+    <div class="card-bottom"><small>${(character.skills ?? []).length} skills${character.isNpc ? ` · ${character.boardWidth} × ${character.boardHeight} squares` : ""}</small><span class="tag tag-neutral">${escapeHtml(character.role || "UNASSIGNED")}</span></div>
   </article>`;
 }
 
@@ -658,7 +684,7 @@ function metricCard(label, value, detail) {
 
 function renderDashboard() {
   const characterById = new Map(workspace.characters.map(character => [character.id, character]));
-  const recentCharacters = (workspace.recentlyOpenedCharacterIds || []).map(id => characterById.get(id)).filter(Boolean).slice(0, 3);
+  const recentCharacters = (workspace.recentlyOpenedCharacterIds || []).map(id => characterById.get(id)).filter(character => character && !character.isNpc).slice(0, 3);
   const characterRows = recentCharacters.map(character => `
     <button class="character-row" type="button" data-action="open-character-sheet" data-id="${escapeHtml(character.id)}">
       ${character.portraitUrl
@@ -680,9 +706,9 @@ function renderDashboard() {
     `<div class="campaign-strip"><div class="campaign-strip-copy"><strong>No campaign on the board yet</strong><small>Start one to keep sessions and crew notes together.</small></div><button class="button button-quiet" type="button" data-new="campaign">Create campaign</button></div>`;
 
   document.getElementById("dashboard-content").innerHTML = `${demoBanner()}
-    <div class="section-grid stats-grid">${metricCard("PLAYER CHARACTERS", workspace.characters.length, "In your roster")}${metricCard("CAMPAIGNS", workspace.campaigns.length, "Stories in progress")}</div>
+    <div class="section-grid stats-grid">${metricCard("PLAYER CHARACTERS", workspace.characters.filter(character => !character.isNpc).length, "In your roster")}${metricCard("CAMPAIGNS", workspace.campaigns.length, "Stories in progress")}</div>
     <div class="section-grid dashboard-grid">
-      <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR CREW</p><h2>Recently opened sheets</h2></div><button class="text-button" type="button" data-view-link="characters">View roster →</button></div><div class="panel-body">${characterRows ? `<div class="character-list">${characterRows}</div>` : `<div class="activity-copy">${workspace.characters.length ? "Open a character sheet to see it here." : "Create a character to start your roster."}</div>`}</div></section>
+      <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR CREW</p><h2>Recently opened sheets</h2></div><button class="text-button" type="button" data-view-link="characters">View roster →</button></div><div class="panel-body">${characterRows ? `<div class="character-list">${characterRows}</div>` : `<div class="activity-copy">${workspace.characters.some(character => !character.isNpc) ? "Open a character sheet to see it here." : "Create a character to start your roster."}</div>`}</div></section>
       <section class="panel"><div class="panel-head"><div><p class="section-kicker">YOUR NETWORK</p><h2>Friends</h2></div></div><div class="friend-tabs" role="tablist" aria-label="Friend tools"><button class="friend-tab ${friendTab === "friends" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "friends"}" data-friend-tab="friends">Friends</button><button class="friend-tab ${friendTab === "requests" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "requests"}" data-friend-tab="requests">Requests${friendData.requests.filter(item => item.toUserId === signedInAccount?.id).length ? ` · ${friendData.requests.filter(item => item.toUserId === signedInAccount?.id).length}` : ""}</button><button class="friend-tab ${friendTab === "messages" ? "active" : ""}" type="button" role="tab" aria-selected="${friendTab === "messages"}" data-friend-tab="messages">Messages</button></div><div class="panel-body friend-panel-body">${renderFriendPanel()}</div></section>
       <section class="panel dashboard-messages-panel"><div class="panel-head"><div><p class="section-kicker">THE LATEST</p><h2>Recent activity</h2></div><button class="text-button" type="button" data-action="refresh-friends">Refresh</button></div><div class="panel-body">${recentMessages ? `<div class="activity-list">${recentMessages}</div>` : `<div class="activity-copy">${signedInAccount ? "Recent messages from your friends will appear here." : "Sign in to see messages from friends."}</div>`}</div></section>
     </div>${campaignsPreview}`;
@@ -986,10 +1012,11 @@ function renderSheet() {
     const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
     return `<div class="body-status-cell"><div class="body-status-cell-heading"><strong>${escapeHtml(label)}</strong><span>SP ${escapeHtml(armorSP)}</span></div><div class="body-health-values"><label><span>Current</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></label><label><span>Max</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></label></div></div>`;
   }).join("");
-  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><div class="sheet-tracking"><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form><form class="sheet-eddies-inline" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Eddies</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required aria-label="Eddies balance"></label><button class="button button-quiet" type="submit">Save</button></form></div></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
+  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${character.isNpc ? "NPC · " : ""}${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><div class="sheet-tracking"><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form><form class="sheet-eddies-inline" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Eddies</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required aria-label="Eddies balance"></label><button class="button button-quiet" type="submit">Save</button></form></div></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
     <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${Object.entries(effectiveAttributes).some(([attribute, value]) => attribute !== "EMP" && value !== character.attributes?.[attribute]) ? `<p class="field-hint">Installed cyberware bonuses are added to the base score; boosted values show base → effective.</p>` : ""}${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
-    <div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
+    ${renderDiceRoller()}<div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
     <section class="panel sheet-recent-actions-panel"><div class="panel-head"><h2>Recent actions</h2></div><div class="panel-body"><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div></div></section>`;
+  if (character.isNpc) target.querySelector('[data-action="open-character-board"]')?.remove();
 }
 
 function roomEventText(event) {
@@ -1038,7 +1065,7 @@ function renderPalette() {
       }).join("") || `<div class="board-empty-inline">No characters are linked yet. Players can share their characters from this tab.</div>`}<p class="field-hint">Only the GM can place characters. Players can move their own character tokens, and the GM can move any token.</p>`;
     } else {
       const linked = new Set(campaignRoster.map(character => character.id));
-      const ownCharacters = workspace.characters.map(character => {
+      const ownCharacters = workspace.characters.filter(character => !character.isNpc).map(character => {
         const alreadyLinked = linked.has(character.id);
         return `<div class="palette-card party-card"><span class="enemy-avatar">${character.portraitUrl ? `<img src="${escapeHtml(character.portraitUrl)}" alt="">` : escapeHtml(initials(character.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.role || "Character")}</small></span><button class="palette-add" type="button" data-action="link-character-room" data-id="${escapeHtml(character.id)}" ${alreadyLinked ? "disabled" : ""} aria-label="${alreadyLinked ? "Already shared" : `Share ${escapeHtml(character.name)} with the GM`}">${alreadyLinked ? "✓" : "＋"}</button></div>`;
       }).join("");
@@ -1047,6 +1074,11 @@ function renderPalette() {
     return;
   }
   if (!boardIsGm) return;
+  if (boardTab === "npcs") {
+    const npcs = workspace.characters.filter(character => character.isNpc);
+    target.innerHTML = `<p class="palette-intro">Create and place your NPCs. Skill totals are unrestricted; each NPC keeps its own sheet and board footprint.</p><button class="button button-primary board-create-npc" type="button" data-new="npc">＋ Create NPC</button>${npcs.map((item, index) => `<button class="palette-card enemy-card" type="button" draggable="true" data-palette-kind="npc" data-palette-index="${index}" aria-label="Drag or add NPC ${escapeHtml(item.name)}, ${item.boardWidth} by ${item.boardHeight} squares"><span class="enemy-avatar">${escapeHtml(initials(item.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.role || "NPC")} · ${item.boardWidth} × ${item.boardHeight} squares</small></span><span class="palette-add">＋</span></button>`).join("")}${npcs.length ? "" : `<div class="board-empty-inline">Create an NPC to make it available here.</div>`}`;
+    return;
+  }
   if (boardTab === "terrain") {
     target.innerHTML = `<p class="palette-intro">Original scale props. Each tile covers 2 × 2 m.</p>${TERRAIN_TEMPLATES.map((item, index) => `<button class="palette-card terrain-card" type="button" draggable="true" data-palette-kind="terrain" data-palette-index="${index}" aria-label="Drag or add ${escapeHtml(item.name)}, ${item.widthMeters} by ${item.heightMeters} meters"><span class="palette-swatch" style="--piece-color:${item.color}"></span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.widthMeters} × ${item.heightMeters} m</small></span><span class="palette-add">＋</span></button>`).join("")}<p class="field-hint">Drag a prop onto the grid or tap + to place it.</p>`;
     return;
@@ -1076,7 +1108,7 @@ function boardRollCharacters() {
     id: token.id,
     name: token.name,
     attributes: token.attributes || {},
-    skills: [],
+    skills: token.skills || [],
     inventory: []
   })) : [];
   const characters = [...workspace.characters, ...campaignRoster, ...enemies];
@@ -1162,8 +1194,14 @@ function renderBoard() {
   const leftRuler = document.getElementById("board-ruler-left");
   const grid = document.getElementById("board-grid");
   if (!topRuler || !leftRuler || !grid) return;
-  topRuler.innerHTML = Array.from({ length: BOARD_COLUMNS + 1 }, (_, index) => `<span>${index * 2}</span>`).join("");
-  leftRuler.innerHTML = Array.from({ length: BOARD_ROWS }, (_, index) => `<span>${index * 2}</span>`).join("");
+  const canvas = document.getElementById("board-canvas");
+  canvas?.style.setProperty("--board-cell", `${boardZoom}px`);
+  const zoomControl = document.getElementById("board-zoom");
+  const zoomValue = document.getElementById("board-zoom-value");
+  if (zoomControl) zoomControl.value = String(boardZoom);
+  if (zoomValue) zoomValue.value = `${boardZoom} px`;
+  topRuler.innerHTML = Array.from({ length: BOARD_COLUMNS / BOARD_RULER_INTERVAL + 1 }, (_, index) => `<span>${index * BOARD_RULER_INTERVAL * 2}</span>`).join("");
+  leftRuler.innerHTML = Array.from({ length: BOARD_ROWS / BOARD_RULER_INTERVAL + 1 }, (_, index) => `<span>${index * BOARD_RULER_INTERVAL * 2}</span>`).join("");
   const pieces = [
     ...boardState.terrain.map(piece => ({ ...piece, renderKind: "terrain" })),
     ...boardState.tokens.map(piece => ({ ...piece, renderKind: "token" }))
@@ -1181,9 +1219,10 @@ function renderBoard() {
 function boardPositionFromEvent(event) {
   const grid = document.getElementById("board-grid");
   const rect = grid.getBoundingClientRect();
+  const cellSize = Number.parseFloat(getComputedStyle(grid).getPropertyValue("--board-cell")) || BOARD_CELL_SIZE;
   return {
-    x: Math.max(0, Math.min(BOARD_COLUMNS - 1, Math.floor((event.clientX - rect.left) / BOARD_CELL_SIZE))),
-    y: Math.max(0, Math.min(BOARD_ROWS - 1, Math.floor((event.clientY - rect.top) / BOARD_CELL_SIZE)))
+    x: Math.max(0, Math.min(BOARD_COLUMNS - 1, Math.floor((event.clientX - rect.left) / cellSize))),
+    y: Math.max(0, Math.min(BOARD_ROWS - 1, Math.floor((event.clientY - rect.top) / cellSize)))
   };
 }
 
@@ -1209,6 +1248,29 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
       width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
       health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 },
       initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId, portraitUrl: character.portraitUrl || ""
+    };
+    boardState.tokens.push(token);
+    selectedBoardTokenId = token.id;
+    selectedBoardPieceId = token.id;
+    selectedBoardPieceKind = "token";
+    sendBoardUpdate();
+    renderBoard();
+    return;
+  }
+  if (kind === "npc") {
+    if (!boardIsGm) return showToast("Only the GM can place NPCs.", true);
+    const npc = workspace.characters.filter(character => character.isNpc)[index];
+    if (!npc) return;
+    const width = Math.min(10, Math.max(1, Number(npc.boardWidth) || 1));
+    const height = Math.min(10, Math.max(1, Number(npc.boardHeight) || 1));
+    const token = {
+      id: makeId(), kind: "enemy", name: npc.name, role: npc.role || "NPC",
+      x: Math.min(position.x, BOARD_COLUMNS - width), y: Math.min(position.y, BOARD_ROWS - height),
+      width, height, attributes: effectiveAttributesFor(npc, itemsForCharacter(npc)),
+      skills: (npc.skills || []).map(normalizeSkill),
+      gear: [...new Set([...(npc.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === npc.id).map(item => item.name)])],
+      health: { current: npc.healthCurrent ?? 0, max: npc.healthMax ?? 0 },
+      initiative: 0, characterId: "", portraitUrl: npc.portraitUrl || ""
     };
     boardState.tokens.push(token);
     selectedBoardTokenId = token.id;
@@ -1748,6 +1810,13 @@ async function openCampaignBoard(campaign, characterId = "") {
 
 function openCharacterBoard(character) {
   if (!character) return;
+  if (character.isNpc) {
+    const campaign = workspace.campaigns[0];
+    if (!campaign) return showToast("Create or join a campaign before opening a shared board.", true);
+    boardTab = "npcs";
+    openCampaignBoard(campaign);
+    return;
+  }
   let campaign = workspace.campaigns.find(item => (item.characterIds ?? []).includes(character.id));
   if (!campaign) campaign = workspace.campaigns[0];
   if (!campaign) return showToast("Create or join a campaign before opening a shared board.", true);
@@ -1792,7 +1861,7 @@ function renderAll() {
   renderCampaigns();
   renderSheet();
   renderBoard();
-  document.getElementById("character-count").textContent = workspace.characters.length;
+  document.getElementById("character-count").textContent = workspace.characters.filter(character => !character.isNpc).length;
   updateAccountControls();
 }
 
@@ -1806,6 +1875,7 @@ function showView(view) {
     }
   }
   activeView = view;
+  document.querySelector(".page-wrap")?.classList.toggle("board-view-active", view === "board");
   document.querySelectorAll(".view-panel").forEach(panel => {
     const active = panel.id === `view-${view}`;
     panel.hidden = !active;
@@ -2104,9 +2174,15 @@ function startingSkillPicker() {
   return `<section class="form-field full skill-creation-fields"><div><span class="field-label">Starting skills</span><span class="field-hint">Choose 9 normal skills and 1 special skill. Assign at least 1 point to each and spend exactly 40 points. This selection limit applies only to initial character creation; add more skills later by editing the character.</span></div><div class="skill-creation-grid"><section class="skill-picker-panel"><h3>Normal skills <span>Choose 9</span></h3><div class="skill-picker-list">${groups}</div></section><section class="skill-picker-panel special-skill-panel"><h3>Special skill <span>Choose 1</span></h3><label class="form-field"><span class="field-label">Special ability</span><select class="field-select" name="specialSkill"><option value="">Choose one</option>${SPECIAL_SKILLS.map(skill => `<option value="${escapeHtml(skill)}">${escapeHtml(skill)}</option>`).join("")}</select></label><label class="form-field"><span class="field-label">Points</span><input class="field-input skill-point-input" type="number" name="specialSkillPoints" min="1" max="40" step="1" value="1" disabled></label></section></div><div class="skill-points-status" id="skill-points-status" aria-live="polite">Normal skills: 0 / 9. Special skill: not selected. Points: 0 / 40.</div></section>`;
 }
 
-function openCharacterForm(character) {
-  const attrs = ATTRIBUTES.map(attribute => `<label class="attribute-field"><span>${attribute}</span><input type="number" min="0" max="10" step="1" name="attr-${attribute}" value="${escapeHtml(character?.attributes?.[attribute] ?? (character ? "" : 0))}" aria-label="${attribute} attribute"></label>`).join("");
-  const attributeCreation = character ? "" : `<div class="form-field full"><span class="field-label">Attribute point method</span><div class="attribute-method-options">
+function openCharacterForm(character, npcMode = Boolean(character?.isNpc)) {
+  const formCharacter = character || (npcMode ? {
+    attributes: Object.fromEntries(ATTRIBUTES.map(attribute => [attribute, 0])),
+    skills: [],
+    boardWidth: 1,
+    boardHeight: 1
+  } : null);
+  const attrs = ATTRIBUTES.map(attribute => `<label class="attribute-field"><span>${attribute}</span><input type="number" min="0" max="10" step="1" name="attr-${attribute}" value="${escapeHtml(formCharacter?.attributes?.[attribute] ?? (formCharacter ? "" : 0))}" aria-label="${attribute} attribute"></label>`).join("");
+  const attributeCreation = formCharacter ? "" : `<div class="form-field full"><span class="field-label">Attribute point method</span><div class="attribute-method-options">
       <label><input type="radio" name="attributeMethod" value="rolled" checked> Roll 9d10</label>
       <label><input type="radio" name="attributeMethod" value="cinematic"> Cinematic point pool</label>
     </div></div>
@@ -2114,21 +2190,27 @@ function openCharacterForm(character) {
     <label class="form-field full attribute-method-panel" data-attribute-panel="cinematic" hidden><span class="field-label">Cinematic tier</span><select class="field-select" name="cinematicTier"><option value="">Choose a tier</option>${CINEMATIC_ATTRIBUTE_TIERS.map(tier => `<option value="${tier.value}">${tier.label} — ${tier.points} points</option>`).join("")}</select></label>
     <input type="hidden" name="attributeRolls" value="">
     <div class="attribute-points-status form-field full" id="attribute-points-status" aria-live="polite"></div>`;
-  const skillFields = character ? characterSkillPicker(character) : startingSkillPicker();
-  const body = `${field("Character name", "name", character?.name ?? "", { required: true })}${field("Role / class", "role", character?.role ?? "")}
-    ${field("Handle / callsign", "handle", character?.handle ?? "")}${attributeCreation}<div class="form-field full"><span class="field-label">Attributes</span><div class="attributes-form">${attrs}</div></div>
+  const skillFields = formCharacter ? characterSkillPicker(formCharacter) : startingSkillPicker();
+  const boardFootprintFields = npcMode ? `<div class="form-grid form-field full"><div><span class="field-label">Board footprint</span><span class="field-hint">Each square is 2 × 2 m. Set both dimensions to 2 for a 2 × 2 unit such as a mech.</span></div>${field("Width (squares)", "boardWidth", formCharacter?.boardWidth ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}${field("Height (squares)", "boardHeight", formCharacter?.boardHeight ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}</div>` : "";
+  const body = `${field(npcMode ? "NPC name" : "Character name", "name", formCharacter?.name ?? "", { required: true })}${field("Role / class", "role", formCharacter?.role ?? "")}
+    ${field("Handle / callsign", "handle", formCharacter?.handle ?? "")}${attributeCreation}<div class="form-field full"><span class="field-label">Attributes</span><div class="attributes-form">${attrs}</div></div>${boardFootprintFields}
     ${skillFields}
-    ${bodyStatusFields(character)}
-    ${field("Current life", "healthCurrent", character?.healthCurrent ?? "", { type: "number", min: 0 })}
-    ${field("Maximum life", "healthMax", character?.healthMax ?? "", { type: "number", min: 0, hint: "Leave blank if your table does not track a maximum." })}
+    ${bodyStatusFields(formCharacter)}
+    ${field("Current life", "healthCurrent", formCharacter?.healthCurrent ?? "", { type: "number", min: 0 })}
+    ${field("Maximum life", "healthMax", formCharacter?.healthMax ?? "", { type: "number", min: 0, hint: "Leave blank if your table does not track a maximum." })}
     <label class="form-field full"><span class="field-label">Portrait</span><input class="field-input" type="file" name="portrait" accept="image/jpeg,image/png,image/webp"><span class="field-hint">Optional JPEG, PNG, or WebP image up to 2 MB. Stored on this app server.</span></label>
-    ${field("History", "history", character?.history ?? "", { full: true, textarea: true })}
-    ${field("Notes", "notes", character?.notes ?? "", { full: true, textarea: true })}`;
-  dialogContent.innerHTML = formShell(character ? "Edit character" : "Create a character", character ? "Build a sheet with the details that matter at your table." : "Roll 9d10 or choose a cinematic pool; allocate every point, with a maximum of 10 per attribute.", "character-form", body, character ? "Save character" : "Create character");
+    ${field("History", "history", formCharacter?.history ?? "", { full: true, textarea: true })}
+    ${field("Notes", "notes", formCharacter?.notes ?? "", { full: true, textarea: true })}`;
+  const title = npcMode ? character ? "Edit NPC" : "Create an NPC" : character ? "Edit character" : "Create a character";
+  const description = npcMode
+    ? "Build an NPC sheet with unrestricted total skill points and a configurable board footprint."
+    : character ? "Build a sheet with the details that matter at your table." : "Roll 9d10 or choose a cinematic pool; allocate every point, with a maximum of 10 per attribute.";
+  dialogContent.innerHTML = formShell(title, description, "character-form", body, character ? "Save" : npcMode ? "Create NPC" : "Create character");
   if (character) dialogContent.querySelector("form").dataset.id = character.id;
+  dialogContent.querySelector("form").dataset.isNpc = String(npcMode);
   dialog.showModal();
   const form = dialogContent.querySelector('form[name="character-form"]');
-  if (!character) {
+  if (!formCharacter) {
     updateAttributeAllocation(form);
     updateSkillAllocation(form);
   }
@@ -2136,14 +2218,15 @@ function openCharacterForm(character) {
 }
 
 function openCampaignForm(campaign) {
-  const options = workspace.characters.map(character => `<option value="${escapeHtml(character.id)}" ${(campaign?.characterIds ?? []).includes(character.id) ? "selected" : ""}>${escapeHtml(character.name)}</option>`).join("");
+  const playerCharacters = workspace.characters.filter(character => !character.isNpc);
+  const options = playerCharacters.map(character => `<option value="${escapeHtml(character.id)}" ${(campaign?.characterIds ?? []).includes(character.id) ? "selected" : ""}>${escapeHtml(character.name)}</option>`).join("");
   const friendOptions = friendData.friends.map(friend => `<option value="${escapeHtml(friend.id)}">${escapeHtml(friend.username)}</option>`).join("");
   const gameMasterField = signedInAccount && !campaign?.isJoined
     ? `<label class="form-field"><span class="field-label">Game master</span><input class="field-input" type="text" value="${escapeHtml(campaign?.gm || signedInAccount.username)}" readonly><span class="field-hint">The account that creates this campaign is its game master.</span></label>`
     : field("Game master / organizer", "gm", campaign?.gm ?? "");
   const body = `${field("Campaign name", "name", campaign?.name ?? "", { required: true })}${gameMasterField}
     ${field("Campaign notes", "description", campaign?.description ?? "", { full: true, textarea: true })}
-    <label class="form-field full"><span class="field-label">Linked characters</span><select class="field-select" name="characterIds" multiple size="${Math.max(3, Math.min(6, workspace.characters.length || 3))}" aria-describedby="campaign-character-hint">${options}</select><span class="field-hint" id="campaign-character-hint">Use Ctrl (Windows) or Command (Mac) to select multiple characters.</span></label>
+    <label class="form-field full"><span class="field-label">Linked characters</span><select class="field-select" name="characterIds" multiple size="${Math.max(3, Math.min(6, playerCharacters.length || 3))}" aria-describedby="campaign-character-hint">${options}</select><span class="field-hint" id="campaign-character-hint">Use Ctrl (Windows) or Command (Mac) to select multiple characters.</span></label>
     ${!campaign && signedInAccount ? `<label class="form-field full"><span class="field-label">Invite a friend</span><select class="field-select" name="inviteFriendId"><option value="">Create without an invite</option>${friendOptions}</select><span class="field-hint">${friendOptions ? "The friend will receive a direct message with a link to join this campaign." : "Add a friend before creating the campaign to send an invite."}</span></label>` : ""}`;
   dialogContent.innerHTML = formShell(campaign ? "Edit campaign" : "Create a campaign", "Keep your crew and campaign notes together.", "campaign-form", body, campaign ? "Save campaign" : "Create campaign");
   if (campaign) dialogContent.querySelector("form").dataset.id = campaign.id;
@@ -2375,8 +2458,12 @@ function openSessionForm(campaign, session) {
 function openForm(type, id, secondaryId) {
   if (type === "character") {
     if (!signedInAccount) return openAuthForm("login");
-    if (!id && workspace.characters.length >= MAX_CHARACTERS_PER_ACCOUNT) return showToast(`Each account can create up to ${MAX_CHARACTERS_PER_ACCOUNT} characters.`, true);
-    openCharacterForm(id ? selectedCharacter(id) : null);
+    if (!id && workspace.characters.filter(character => !character.isNpc).length >= MAX_CHARACTERS_PER_ACCOUNT) return showToast(`Each account can create up to ${MAX_CHARACTERS_PER_ACCOUNT} player characters.`, true);
+    openCharacterForm(id ? selectedCharacter(id) : null, Boolean(id && selectedCharacter(id)?.isNpc));
+  }
+  if (type === "npc") {
+    if (!signedInAccount) return openAuthForm("login");
+    openCharacterForm(id ? selectedCharacter(id) : null, true);
   }
   if (type === "campaign") openCampaignForm(id ? workspace.campaigns.find(campaign => campaign.id === id) : null);
   if (type === "gear") openGearForm(id ? workspace.gear.find(item => item.id === id) : null, secondaryId || "");
@@ -2424,15 +2511,16 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
     else workspace.characters.push(savedCharacter);
     signedInAccount.characters = workspace.characters;
     workspace.demo = false;
-    addActivity(previous ? `${savedCharacter.name}'s sheet was updated` : `${savedCharacter.name} joined the roster`, previous ? "Character updated" : "Character added");
+    const noun = savedCharacter.isNpc ? "NPC" : "Character";
+    addActivity(previous ? `${savedCharacter.name}'s sheet was updated` : `${savedCharacter.name} was added`, previous ? `${noun} updated` : `${noun} added`);
     const locallySaved = saveWorkspace();
     if (!locallySaved) renderAll();
     if (previous) recordCharacterHealthChange(previous, savedCharacter);
     updateAccountControls();
     if (showSavedMessage) {
       showToast(portraitUploadError
-        ? `Character saved, but portrait upload failed: ${portraitUploadError}`
-        : previous ? "Character saved." : "Character created.", Boolean(portraitUploadError));
+        ? `${savedCharacter.isNpc ? "NPC" : "Character"} saved, but portrait upload failed: ${portraitUploadError}`
+        : previous ? `${savedCharacter.isNpc ? "NPC" : "Character"} saved.` : `${savedCharacter.isNpc ? "NPC" : "Character"} created.`, Boolean(portraitUploadError));
     } else if (portraitUploadError) {
       showToast(`Character saved, but portrait upload failed: ${portraitUploadError}`, true);
     }
@@ -2936,6 +3024,7 @@ function persistForm(form) {
     if (!name) return showToast("A character needs a name.", true);
     const id = form.dataset.id || makeId();
     const previous = selectedCharacter(id);
+    const isNpc = form.dataset.isNpc === "true";
     const attributes = Object.fromEntries(ATTRIBUTES.map(attribute => {
       const raw = String(data.get(`attr-${attribute}`) ?? "").trim();
       return [attribute, raw === "" ? "" : Number(raw)];
@@ -2947,10 +3036,10 @@ function persistForm(form) {
       return showToast("Attributes must be whole numbers from 0 to 10.", true);
     }
     let attributeGeneration;
-    let skills = previous ? editedSkillsFromForm(form) : [];
-    if (previous && !skills) return;
+    let skills = previous || isNpc ? editedSkillsFromForm(form) : [];
+    if ((previous || isNpc) && !skills) return;
     let skillGeneration;
-    if (!previous) {
+    if (!previous && !isNpc) {
       const method = form.querySelector('[name="attributeMethod"]:checked')?.value;
       const pointPool = selectedAttributePointPool(form);
       if (pointPool == null) {
@@ -2980,9 +3069,15 @@ function persistForm(form) {
     if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined || bodyHealth[key].max === undefined || bodyArmorSP[key] === undefined)) {
       return showToast("Limb health and armor SP must be whole numbers within their allowed ranges.", true);
     }
+    const boardWidth = Number(data.get("boardWidth") || previous?.boardWidth || 1);
+    const boardHeight = Number(data.get("boardHeight") || previous?.boardHeight || 1);
+    if (!Number.isInteger(boardWidth) || boardWidth < 1 || boardWidth > 10
+      || !Number.isInteger(boardHeight) || boardHeight < 1 || boardHeight > 10) {
+      return showToast("NPC board dimensions must be whole numbers from 1 to 10 squares.", true);
+    }
     const character = {
       id, name, role: String(data.get("role") ?? "").trim(), handle: String(data.get("handle") ?? "").trim(),
-      attributes, skills,
+      attributes, skills, isNpc: previous ? Boolean(previous.isNpc) : isNpc, boardWidth, boardHeight,
       bodyHealth, bodyArmorSP,
       ...(attributeGeneration ? { attributeGeneration } : {}),
       ...(skillGeneration ? { skillGeneration } : {}),
@@ -3615,6 +3710,11 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("submit", event => {
+  if (event.target.matches("[data-dice-roll-form]")) {
+    event.preventDefault();
+    performFreeDiceRoll(event.target);
+    return;
+  }
   if (event.target.id === "friend-search-form") {
     event.preventDefault();
     void searchFriendUsers(event.target);
@@ -3674,6 +3774,12 @@ document.getElementById("board-connect").addEventListener("click", () => connect
   document.getElementById("board-player-name").value,
   document.getElementById("board-gm-key").value.trim()
 ));
+document.getElementById("board-zoom").addEventListener("input", event => {
+  boardZoom = Number(event.target.value);
+  const canvas = document.getElementById("board-canvas");
+  canvas?.style.setProperty("--board-cell", `${boardZoom}px`);
+  document.getElementById("board-zoom-value").value = `${boardZoom} px`;
+});
 document.addEventListener("change", event => {
   const catalogForm = event.target.closest('form[name="catalog-item-form"]');
   if (catalogForm && ["category", "weaponType", "cyberwareWeaponEnabled"].includes(event.target.name)) updateCatalogWeaponFields(catalogForm);

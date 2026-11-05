@@ -51,7 +51,7 @@
           <section class="view-panel" id="view-characters" aria-labelledby="characters-title" hidden>
             <div class="page-heading">
               <div><p class="eyebrow">THE PEOPLE BEHIND THE LEGENDS</p><h1 id="characters-title">Characters<span class="heading-period">.</span></h1><p class="page-subtitle">Build your crew. Keep their stories close.</p></div>
-              <button class="button button-primary" type="button" data-new="character"><span aria-hidden="true">＋</span> New character</button>
+              <div class="heading-actions"><button class="button" type="button" data-new="npc">＋ New NPC</button><button class="button button-primary" type="button" data-new="character"><span aria-hidden="true">＋</span> New character</button></div>
             </div>
             <div id="characters-content"></div>
           </section>
@@ -78,7 +78,7 @@
 
           <section class="view-panel" id="view-board" aria-labelledby="board-title" hidden>
             <div class="page-heading board-page-heading">
-              <div><p class="eyebrow">SHARED TABLE · 2 METERS PER SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
+              <div><p class="eyebrow">SHARED TABLE · 1000 × 1000 METERS · 2 METERS PER SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
               <div class="board-heading-actions"><button class="button" type="button" data-view-link="campaigns">Back to campaigns</button><span class="connection-pill" id="board-connection-status"><span class="connection-dot"></span> OFFLINE</span><button class="button" type="button" data-action="copy-room-code">Copy room code</button></div>
             </div>
             <div class="board-connect-bar">
@@ -94,14 +94,15 @@
                 <div class="board-tabs" role="tablist" aria-label="Board pieces">
                   <button class="board-tab active" type="button" role="tab" aria-selected="true" data-board-tab="terrain">Terrain</button>
                   <button class="board-tab" type="button" role="tab" aria-selected="false" data-board-tab="enemies">Enemies</button>
+                  <button class="board-tab" type="button" role="tab" aria-selected="false" data-board-tab="npcs">NPCs</button>
                   <button class="board-tab" type="button" role="tab" aria-selected="false" data-board-tab="party">Party</button>
                 </div>
                 <div id="board-palette-content"></div>
               </aside>
               <div class="board-center">
-                <div class="board-instructions"><span class="live-dot"></span><span>Drag pieces onto the grid or tap “Add”. Move placed pieces to update the shared board.</span><button class="icon-button" type="button" data-action="remove-board-piece" aria-label="Remove selected board piece" title="Remove selected piece">×</button></div>
+                <div class="board-instructions"><span class="live-dot"></span><span>Drag pieces onto the grid or tap “Add”. Move placed pieces to update the shared board.</span><label class="board-zoom-control" for="board-zoom">ZOOM <input id="board-zoom" type="range" min="12" max="48" step="2" value="32"><output id="board-zoom-value" for="board-zoom">32 px</output></label><button class="icon-button" type="button" data-action="remove-board-piece" aria-label="Remove selected board piece" title="Remove selected piece">×</button></div>
                 <div class="board-scroll">
-                  <div class="board-canvas">
+                  <div class="board-canvas" id="board-canvas">
                     <div class="ruler-corner" aria-hidden="true">m</div>
                     <div class="board-ruler-top" id="board-ruler-top" aria-label="Horizontal ruler in meters"></div>
                     <div class="board-ruler-left" id="board-ruler-left" aria-label="Vertical ruler in meters"></div>

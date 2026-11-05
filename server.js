@@ -24,8 +24,8 @@ const DEFAULT_CATALOG_FILES = ["weapon-summaries.json", "equipment-summaries.jso
 const PORTRAIT_DIR = path.join(DATA_DIR, "portraits");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8000);
-const BOARD_COLUMNS = 20;
-const BOARD_ROWS = 14;
+const BOARD_COLUMNS = 500;
+const BOARD_ROWS = 500;
 const MAX_EVENTS = 80;
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CHARACTERS_PER_ACCOUNT = 10;
@@ -191,7 +191,9 @@ function sanitizeInitialSkillGeneration(input, skills) {
 
 function sanitizeCharacter(input, existing = {}) {
   if (!input || typeof input !== "object") return null;
+  if (input.isNpc != null && typeof input.isNpc !== "boolean") return null;
   const isNewCharacter = !existing.id;
+  const isNpc = isNewCharacter ? Boolean(input.isNpc) : Boolean(existing.isNpc);
   if (!validBodyHealth(input.bodyHealth) || !validBodyArmorSP(input.bodyArmorSP) || !validInventoryChipData(input.inventory)) return null;
   for (const key of ATTRIBUTE_KEYS) {
     const value = input.attributes?.[key];
@@ -201,19 +203,19 @@ function sanitizeCharacter(input, existing = {}) {
   const name = boundedText(input.name, 80);
   if (!name) return null;
   const attributes = sanitizeAttributes(input.attributes);
-  const attributeGeneration = isNewCharacter
+  const attributeGeneration = isNewCharacter && !isNpc
     ? sanitizeInitialAttributeGeneration(input.attributeGeneration, attributes)
     : existing.attributeGeneration;
-  if (isNewCharacter && !attributeGeneration) return null;
+  if (isNewCharacter && !isNpc && !attributeGeneration) return null;
   const skills = Array.isArray(input.skills) ? input.skills.slice(0, 100).map(skill => {
     if (typeof skill === "string") return { name: boundedText(skill, 80), value: 0, special: false };
     return { name: boundedText(skill?.name, 80), value: finiteInteger(skill?.value, 0, -100, 100), special: Boolean(skill?.special) };
   }).filter(skill => skill.name) : [];
-  const skillGeneration = isNewCharacter
+  const skillGeneration = isNewCharacter && !isNpc
     ? sanitizeInitialSkillGeneration(input.skillGeneration, skills)
     : existing.skillGeneration;
-  if (isNewCharacter && !skillGeneration) return null;
-  if (isNewCharacter && skillGeneration.method === "creation"
+  if (isNewCharacter && !isNpc && !skillGeneration) return null;
+  if (isNewCharacter && skillGeneration?.method === "creation"
     && (!Array.isArray(input.skills) || input.skills.length !== 10
       || input.skills.some(skill => !skill || typeof skill !== "object"
         || !Number.isInteger(Number(skill.value)) || Number(skill.value) < 1 || Number(skill.value) > 40
@@ -271,6 +273,9 @@ function sanitizeCharacter(input, existing = {}) {
     ...existing,
     id: existing.id || randomUUID(),
     name,
+    isNpc,
+    boardWidth: finiteInteger(input.boardWidth, 1, 1, 10),
+    boardHeight: finiteInteger(input.boardHeight, 1, 1, 10),
     role: boundedText(input.role, 80),
     handle: boundedText(input.handle, 80),
     attributes,
@@ -396,6 +401,11 @@ function normalizePiece(piece, kind) {
     } : { current: 0, max: 0 };
     normalized.initiative = finiteInteger(piece.initiative, 0, -1000, 1000);
     normalized.attributes = attributes;
+    normalized.skills = Array.isArray(piece.skills) ? piece.skills.slice(0, 100).map(skill => ({
+      name: boundedText(skill?.name, 80),
+      value: finiteInteger(skill?.value, 0, -100, 100),
+      special: Boolean(skill?.special)
+    })).filter(skill => skill.name) : [];
     normalized.gear = Array.isArray(piece.gear) ? piece.gear.slice(0, 20).map(item => boundedText(item, 100)).filter(Boolean) : [];
     normalized.role = boundedText(piece.role, 80);
     normalized.portraitUrl = /^\/api\/portraits\/[0-9a-f-]{36}$/i.test(piece.portraitUrl) ? piece.portraitUrl : "";
@@ -787,7 +797,7 @@ function boardForViewer(board, socket) {
     terrain: board.terrain,
     tokens: board.tokens.map(token => {
       if (token.kind === "character" && token.ownerUserId === socket.userId) return token;
-      const { attributes, gear, health, initiative, characterId, ownerUserId, ...publicToken } = token;
+      const { attributes, skills, gear, health, initiative, characterId, ownerUserId, ...publicToken } = token;
       return publicToken;
     })
   };
@@ -1019,13 +1029,14 @@ async function handleApi(request, response, requestUrl) {
   if (pathname === "/api/characters") {
     if (request.method === "GET") return jsonResponse(response, 200, { characters: session.account.characters.map(publicCharacter), maxCharacters: MAX_CHARACTERS_PER_ACCOUNT });
     if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
-    if (session.account.characters.length >= MAX_CHARACTERS_PER_ACCOUNT) return jsonResponse(response, 409, { error: `Each account can create up to ${MAX_CHARACTERS_PER_ACCOUNT} characters.` });
     const input = await readJsonBody(request);
+    const playerCharacterCount = session.account.characters.filter(character => !character.isNpc).length;
+    if (!input.isNpc && playerCharacterCount >= MAX_CHARACTERS_PER_ACCOUNT) return jsonResponse(response, 409, { error: `Each account can create up to ${MAX_CHARACTERS_PER_ACCOUNT} player characters.` });
     const character = sanitizeCharacter(input);
-    if (!character) return jsonResponse(response, 400, { error: "Enter valid character details, allocate a valid attribute pool with values from 0 to 10, and choose 9 normal skills plus 1 special skill totaling exactly 40 points." });
+    if (!character) return jsonResponse(response, 400, { error: "Enter valid character details, allocate a valid attribute pool with values from 0 to 10, and choose 9 normal skills plus 1 special skill totaling exactly 40 points for player characters." });
     session.account.characters.push(character);
     await persistStore();
-    return jsonResponse(response, 201, { character: publicCharacter(character), count: session.account.characters.length, maxCharacters: MAX_CHARACTERS_PER_ACCOUNT });
+    return jsonResponse(response, 201, { character: publicCharacter(character), count: playerCharacterCount + (character.isNpc ? 0 : 1), maxCharacters: MAX_CHARACTERS_PER_ACCOUNT });
   }
 
   const characterMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]+)$/);
@@ -1236,7 +1247,7 @@ async function handleApi(request, response, requestUrl) {
     if (request.method !== "POST") return jsonResponse(response, 405, { error: "Method not allowed." });
     const input = await readJsonBody(request);
     if (!Array.isArray(input.characterIds)) return jsonResponse(response, 400, { error: "Choose at least one of your characters." });
-    const ownedIds = new Set(session.account.characters.map(character => character.id));
+    const ownedIds = new Set(session.account.characters.filter(character => !character.isNpc).map(character => character.id));
     const alreadyLinkedToRoom = room.roster.some(entry => entry.userId === session.userId);
     if (!alreadyLinkedToRoom && session.userId !== room.ownerUserId && linkedPlayerCount(room) >= MAX_CAMPAIGN_PLAYERS) {
       return jsonResponse(response, 409, { error: `This campaign already has ${MAX_CAMPAIGN_PLAYERS} players.` });

@@ -41,6 +41,19 @@ test("character normalization clamps values and derives humanity and body state"
   assert.equal(character.eddies, 999999999);
 });
 
+test("NPC normalization preserves an unrestricted skill pool and board footprint", () => {
+  const npc = normalizeCharacter({
+    isNpc: true,
+    boardWidth: 2,
+    boardHeight: 2,
+    skills: [{ name: "Heavy Weapons", value: 80 }, { name: "Driving", value: 70 }]
+  });
+  assert.equal(npc.isNpc, true);
+  assert.equal(npc.skills.reduce((sum, skill) => sum + skill.value, 0), 150);
+  assert.equal(npc.boardWidth, 2);
+  assert.equal(npc.boardHeight, 2);
+});
+
 test("humanity loss notation accepts supported values and rejects invalid divisors", () => {
   assert.equal(validHumanityLossNotation("5"), true);
   assert.equal(validHumanityLossNotation("2D6/2"), true);

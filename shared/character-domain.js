@@ -162,6 +162,13 @@ export function normalizeCharacter(character) {
     : Number(character.humanity);
   return {
     ...character,
+    isNpc: Boolean(character.isNpc),
+    boardWidth: Number.isInteger(Number(character.boardWidth)) && Number(character.boardWidth) >= 1 && Number(character.boardWidth) <= 10
+      ? Number(character.boardWidth)
+      : 1,
+    boardHeight: Number.isInteger(Number(character.boardHeight)) && Number(character.boardHeight) >= 1 && Number(character.boardHeight) <= 10
+      ? Number(character.boardHeight)
+      : 1,
     skills: Array.isArray(character.skills) ? character.skills.map(normalizeSkill).filter(skill => skill.name) : [],
     inventory,
     humanity: isValidHumanityAmount(humanity, humanityMaximum) ? humanity : Math.max(0, humanityMaximum - installedLoss),
