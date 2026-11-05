@@ -1,4 +1,5 @@
 export const ATTRIBUTES = ["INT", "REF", "TECH", "COOL", "ATTR", "LUCK", "MA", "BODY", "EMP"];
+const MODIFIABLE_ATTRIBUTES = ATTRIBUTES.filter(attribute => attribute !== "EMP");
 export const BODY_LOCATIONS = [
   { key: "head", label: "Head" },
   { key: "torso", label: "Torso" },
@@ -79,6 +80,43 @@ export function humanityLossForItem(item) {
   return String(item.humanityLoss ?? "5").trim() || "5";
 }
 
+export function validAttributeBonuses(value, category) {
+  if (value == null) return true;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (String(category || "").toLowerCase() !== "cyberware") return keys.length === 0;
+  return keys.every(attribute => MODIFIABLE_ATTRIBUTES.includes(attribute)
+    && Number.isInteger(Number(value[attribute]))
+    && Number(value[attribute]) >= -100
+    && Number(value[attribute]) <= 100);
+}
+
+export function normalizeAttributeBonuses(value, category) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || String(category || "").toLowerCase() !== "cyberware") return {};
+  return Object.fromEntries(MODIFIABLE_ATTRIBUTES
+    .filter(attribute => Number.isInteger(Number(value[attribute]))
+      && Number(value[attribute]) >= -100
+      && Number(value[attribute]) <= 100
+      && Number(value[attribute]) !== 0)
+    .map(attribute => [attribute, Number(value[attribute])]));
+}
+
+export function effectiveAttributesFor(character, inventory = character?.inventory || []) {
+  const attributes = Object.fromEntries(ATTRIBUTES.map(attribute => [
+    attribute,
+    Number(character?.attributes?.[attribute]) || 0
+  ]));
+  for (const item of inventory) {
+    if (!item?.equipped || Number(item.quantity ?? 1) <= 0
+      || String(item.category || "").toLowerCase() !== "cyberware") continue;
+    for (const [attribute, bonus] of Object.entries(normalizeAttributeBonuses(item.attributeBonuses, item.category))) {
+      attributes[attribute] += bonus;
+    }
+  }
+  return attributes;
+}
+
 export function staticHumanityLoss(notation) {
   const match = String(notation).trim().match(/^(\d+(?:\.\d+)?)(?:\s*pts?)?$/i);
   return match ? Number(match[1]) : null;
@@ -108,6 +146,7 @@ export function normalizeCharacter(character) {
     ? character.inventory.map(item => ({
       ...item,
       humanityLoss: humanityLossForItem(item),
+      attributeBonuses: normalizeAttributeBonuses(item.attributeBonuses, item.category),
       humanityCharged: Boolean(item.humanityCharged || (item.equipped && character.humanity != null)),
       humanityLossPaid: isValidHumanityAmount(item.humanityLossPaid, 9999) ? Number(item.humanityLossPaid) : 0
     }))

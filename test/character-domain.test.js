@@ -3,11 +3,13 @@ import test from "node:test";
 import {
   currentEmpathyFor,
   currentHumanityFor,
+  effectiveAttributesFor,
   normalizeCharacter,
   normalizeSkill,
   skillEntries,
   skillText,
   startingHumanityFor,
+  validAttributeBonuses,
   validHumanityLossNotation
 } from "../shared/character-domain.js";
 
@@ -44,4 +46,21 @@ test("humanity loss notation accepts supported values and rejects invalid diviso
   assert.equal(validHumanityLossNotation("2D6/2"), true);
   assert.equal(validHumanityLossNotation("2D6/3"), false);
   assert.equal(validHumanityLossNotation("not a formula"), false);
+});
+
+test("installed cyberware raises effective attributes without changing the base cap", () => {
+  const character = normalizeCharacter({
+    attributes: { BODY: 8, REF: 6 },
+    inventory: [{ category: "Cyberware", equipped: true, attributeBonuses: { BODY: 4 } }]
+  });
+  assert.equal(effectiveAttributesFor(character).BODY, 12);
+  assert.equal(character.attributes.BODY, 8);
+  assert.equal(effectiveAttributesFor({ ...character, inventory: [{ ...character.inventory[0], equipped: false }] }).BODY, 8);
+});
+
+test("attribute bonuses are limited to cyberware and supported modifiers", () => {
+  assert.equal(validAttributeBonuses({ BODY: 4 }, "Cyberware"), true);
+  assert.equal(validAttributeBonuses({ BODY: 4 }, "Equipment"), false);
+  assert.equal(validAttributeBonuses({ EMP: 4 }, "Cyberware"), false);
+  assert.equal(validAttributeBonuses({ BODY: 101 }, "Cyberware"), false);
 });

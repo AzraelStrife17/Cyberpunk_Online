@@ -7,7 +7,13 @@ import { randomUUID, randomBytes, createHash, scrypt as scryptCallback, timingSa
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
-import { isValidHumanityAmount as validHumanityAmount, validHumanityLossNotation as validateHumanityLossNotation } from "./shared/character-domain.js";
+import {
+  effectiveAttributesFor,
+  isValidHumanityAmount as validHumanityAmount,
+  normalizeAttributeBonuses,
+  validAttributeBonuses,
+  validHumanityLossNotation as validateHumanityLossNotation
+} from "./shared/character-domain.js";
 import { migrateStoreData, STORE_SCHEMA_VERSION } from "./server/store-migrations.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -128,6 +134,7 @@ function validInventoryChipData(inventory) {
     const chipSkill = boundedText(item.chipSkill, 80);
     const hasChipData = chipSkill || item.socketed || (item.chipBonus != null && item.chipBonus !== "");
     if (hasChipData && boundedText(item.category, 40).toLowerCase() !== "cyberware") return false;
+    if (!validAttributeBonuses(item.attributeBonuses, item.category)) return false;
     return validOptionalInteger(item.chipBonus, 9999)
       && (item.humanityLoss == null || item.humanityLoss === "" || validHumanityLossNotation(item.humanityLoss))
       && validHumanityAmount(item.humanityLossPaid ?? 0, 9999)
@@ -230,6 +237,7 @@ function sanitizeCharacter(input, existing = {}) {
       chipSkill: boundedText(item?.chipSkill, 80),
       chipBonus: item?.chipBonus == null || item.chipBonus === "" ? null : finiteInteger(item.chipBonus, 0, 0, 9999),
       socketed: Boolean(item?.socketed),
+      attributeBonuses: normalizeAttributeBonuses(item?.attributeBonuses, category),
       ammoType: boundedText(item?.ammoType, 40),
       ammoLoaded: item?.ammoLoaded == null || item.ammoLoaded === "" ? null : finiteInteger(item.ammoLoaded, 0, 0, 9999),
       description: boundedText(item?.description, 1000),
@@ -297,7 +305,8 @@ function sanitizeCatalogItem(input) {
     : [];
   const pricePerLevel = input.pricePerLevel == null || input.pricePerLevel === "" ? null : Number(input.pricePerLevel);
   const purchaseCost = input.purchaseCost == null || input.purchaseCost === "" ? null : Number(input.purchaseCost);
-  if ((chipSkill && boundedText(input.category, 40).toLowerCase() !== "cyberware")
+  if (!validAttributeBonuses(input.attributeBonuses, category)
+    || (chipSkill && boundedText(input.category, 40).toLowerCase() !== "cyberware")
     || (chipSkillOptions.length && (boundedText(input.category, 40).toLowerCase() !== "cyberware"
       || new Set(chipSkillOptions.map(option => option.toLowerCase())).size !== chipSkillOptions.length))
     || (pricePerLevel != null && (!Number.isSafeInteger(pricePerLevel) || pricePerLevel <= 0 || pricePerLevel > 999999999))
@@ -315,6 +324,7 @@ function sanitizeCatalogItem(input) {
     humanityLoss,
     chipSkill,
     chipSkillOptions,
+    attributeBonuses: normalizeAttributeBonuses(input.attributeBonuses, category),
     pricePerLevel,
     purchaseCost,
     weight: boundedText(input.weight, 40),
@@ -821,7 +831,7 @@ function syncCharacterToRooms(character, ownerUserId) {
       if (token.kind !== "character" || token.characterId !== character.id || token.ownerUserId !== ownerUserId) continue;
       token.name = character.name;
       token.role = character.role || "Character";
-      token.attributes = { ...character.attributes };
+      token.attributes = effectiveAttributesFor(character);
       token.health = { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 };
       token.gear = (character.inventory || []).slice(0, 20).map(item => item.name);
       token.portraitUrl = updatedCharacter.portraitUrl;

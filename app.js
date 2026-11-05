@@ -26,6 +26,7 @@ import {
   BODY_LOCATIONS,
   currentEmpathyFor,
   currentHumanityFor,
+  effectiveAttributesFor,
   humanityLossChoices,
   humanityLossForItem,
   isValidHumanityAmount,
@@ -34,9 +35,8 @@ import {
   normalizeCharacter,
   normalizeOptionalInteger,
   normalizeSkill,
+  normalizeAttributeBonuses,
   readOptionalFormInteger,
-  skillEntries,
-  skillText,
   startingHumanityFor,
   staticHumanityLoss,
   validHumanityLossNotation
@@ -501,7 +501,10 @@ function itemsForCharacter(character) {
     return {
       ...item,
       weaponType: item.weaponType || catalogItem.weaponType || "",
-      weaponStats: item.weaponStats || catalogItem.weaponStats || ""
+      weaponStats: item.weaponStats || catalogItem.weaponStats || "",
+      attributeBonuses: Object.keys(item.attributeBonuses || {}).length
+        ? item.attributeBonuses
+        : catalogItem.attributeBonuses || {}
     };
   });
 }
@@ -611,10 +614,14 @@ function initials(name = "?") {
 }
 
 function characterCard(character) {
+  const attributes = effectiveAttributesFor(character, itemsForCharacter(character));
   const attrCells = ATTRIBUTES.map(attribute => {
-    const value = attribute === "EMP"
+    const base = attribute === "EMP"
       ? `[${character.attributes?.EMP ?? "—"}/${currentEmpathyFor(character)}]`
       : character.attributes?.[attribute] ?? "—";
+    const value = attribute === "EMP" || attributes[attribute] === character.attributes?.[attribute]
+      ? base
+      : `${character.attributes?.[attribute] ?? "—"} → ${attributes[attribute]}`;
     return `<div class="attr-cell"><span>${attribute}</span><strong>${escapeHtml(value)}</strong></div>`;
   }).join("");
   const portrait = character.portraitUrl
@@ -823,8 +830,11 @@ function renderInventoryPanel(character, inventory) {
     const chipDetail = item.chipSkill
       ? `<span class="gear-detail">Skill chip · ${escapeHtml(item.chipSkill)} +${escapeHtml(item.chipBonus ?? 0)}${item.socketed ? " · socketed" : ""}</span>`
       : "";
+    const attributeDetail = Object.entries(normalizeAttributeBonuses(item.attributeBonuses, item.category))
+      .map(([attribute, bonus]) => `<span class="gear-detail">${escapeHtml(attribute)} ${bonus > 0 ? "+" : ""}${escapeHtml(bonus)} ${item.equipped ? "active" : "when installed"}</span>`)
+      .join("");
     return `<tr>
-      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(ammunition ? `${item.category} · ${item.quantity} rounds` : `${item.weaponType || item.category || "Item"} · QTY ${item.quantity}`)}</span>${chipDetail}</td>
+      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(ammunition ? `${item.category} · ${item.quantity} rounds` : `${item.weaponType || item.category || "Item"} · QTY ${item.quantity}`)}</span>${attributeDetail}${chipDetail}</td>
       ${cyberware ? `<td>HL ${escapeHtml(humanityLossForItem(item))}${item.humanityCost ? ` · ${escapeHtml(item.humanityCost)}` : ""}${paidDetail}</td>` : `<td>${escapeHtml(item.cost || "—")}</td>`}
       <td>${ammunition ? `<span class="inventory-equipped">${Number(item.quantity) > 0 ? "In stock" : "Empty"}</span>` : `<label class="inventory-equipped" for="${checkId}"><input id="${checkId}" type="checkbox" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-label="${cyberware ? `${installAction} ${escapeHtml(item.name)}` : `Equip ${escapeHtml(item.name)}`}" ${item.equipped ? "checked" : ""}><span>${cyberware ? item.equipped ? "Installed" : "Install" : "Equipped"}</span></label>`}${item.chipSkill ? `<button class="text-button inventory-socket-toggle" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}">${item.socketed ? "Unsocket chip" : "Socket chip"}</button>` : ""}</td>
       <td class="inventory-item-actions"><button class="icon-button" type="button" data-action="edit-gear" data-id="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}">✎</button><button class="icon-button" type="button" data-action="delete-gear" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button></td>
@@ -844,7 +854,7 @@ function renderInventoryPanel(character, inventory) {
 
 function renderCharacterActions(character, inventory) {
   const equippedWeapons = inventory.filter(item => item.equipped && isWeaponActionItem(item));
-  const ref = Number(character.attributes?.REF || 0);
+  const ref = effectiveAttributesFor(character, inventory).REF;
   const initiativeRow = `<article class="sheet-attack-action sheet-initiative-action">
     <div class="sheet-attack-title"><strong>Initiative Roll</strong><small>1d10 + REF + modifier</small></div>
     <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-initiative-roll" data-character-id="${escapeHtml(character.id)}" aria-label="Roll initiative for ${escapeHtml(character.name)}">Roll initiative</button></div>
@@ -900,7 +910,10 @@ function renderSkillsPanel(character) {
   const skillRows = skills.map(skill => {
     const chipBonus = skillChipBonusFor(character, skill.name);
     const attribute = attributeForSkill(skill.name);
-    return `<button class="sheet-skill-roll" type="button" data-action="sheet-skill-roll" data-character-id="${escapeHtml(character.id)}" data-skill-name="${escapeHtml(skill.name)}" data-attribute="${escapeHtml(attribute)}" title="Roll ${escapeHtml(skill.name)} using ${attribute} + skill + chip bonuses"><span>${escapeHtml(skill.name)}${skill.special ? " · Special" : ""}<small>${attribute}${chipBonus ? ` · +${skill.value} skill +${chipBonus} chip` : ` · +${skill.value}`}</small></span><b>+${escapeHtml(skill.value + chipBonus)}</b></button>`;
+    const proficiencyMarker = skill.value > 0
+      ? `<span class="skill-proficiency-marker" aria-label="Proficient" title="Trained in this skill">✓</span>`
+      : "";
+    return `<button class="sheet-skill-roll" type="button" data-action="sheet-skill-roll" data-character-id="${escapeHtml(character.id)}" data-skill-name="${escapeHtml(skill.name)}" data-attribute="${escapeHtml(attribute)}" title="Roll ${escapeHtml(skill.name)} using ${attribute} + skill + chip bonuses"><span><span class="sheet-skill-name">${escapeHtml(skill.name)}${skill.special ? " · Special" : ""}</span>${proficiencyMarker}<small>${attribute}${chipBonus ? ` · +${skill.value} skill +${chipBonus} chip` : ` · +${skill.value}`}</small></span><b>+${escapeHtml(skill.value + chipBonus)}</b></button>`;
   });
   const groups = [
     { key: "SPECIAL", label: "Special", skills: skills.filter(skill => skill.special) },
@@ -918,7 +931,7 @@ function renderSkillsPanel(character) {
   const activeSkills = activeGroup
     ? `<section class="sheet-skill-group" id="sheet-skill-panel" role="tabpanel" aria-labelledby="sheet-skill-tab-${activeGroupIndex}"><div class="sheet-skill-list">${activeGroup.skills.map(skill => skillRows[skills.indexOf(skill)]).join("")}</div></section>`
     : `<p class="field-hint">Add skills in Edit sheet to roll them here.</p>`;
-  return `<section class="panel sheet-skills-panel"><div class="panel-head"><h2>Skills</h2></div><div class="panel-body"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${skillTabs}</div><div class="sheet-skills-groups">${activeSkills}</div></div></section>`;
+  return `<section class="panel sheet-skills-panel"><div class="panel-head"><h2>Skills</h2><span class="skill-proficiency-legend"><span aria-hidden="true">✓</span> Proficient</span></div><div class="panel-body"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${skillTabs}</div><div class="sheet-skills-groups">${activeSkills}</div></div></section>`;
 }
 
 function updateSheetLayoutPreference() {
@@ -948,6 +961,7 @@ function renderSheet() {
   selector.value = character.id;
   selectedSheetCharacterId = character.id;
   const inventory = itemsForCharacter(character);
+  const effectiveAttributes = effectiveAttributesFor(character, inventory);
   const portrait = character.portraitUrl
     ? `<img class="sheet-portrait" src="${escapeHtml(character.portraitUrl)}" alt="${escapeHtml(character.name)} portrait">`
     : `<div class="sheet-portrait sheet-portrait-placeholder" aria-hidden="true">${escapeHtml(initials(character.name))}</div>`;
@@ -957,9 +971,12 @@ function renderSheet() {
     return;
   }
   const attributes = ATTRIBUTES.map(attribute => {
-    const value = attribute === "EMP"
+    const base = attribute === "EMP"
       ? `[${character.attributes?.EMP ?? "—"}/${currentEmpathyFor(character)}]`
       : character.attributes?.[attribute] ?? "—";
+    const value = attribute === "EMP" || effectiveAttributes[attribute] === character.attributes?.[attribute]
+      ? base
+      : `${character.attributes?.[attribute] ?? "—"} → ${effectiveAttributes[attribute]}`;
     return `<button class="attr-cell attr-roll-button" type="button" data-action="sheet-attribute-roll" data-character-id="${escapeHtml(character.id)}" data-attribute="${attribute}" title="Roll ${attribute}">${attribute}<strong>${escapeHtml(value)}</strong></button>`;
   }).join("");
   const humanityMaximum = startingHumanityFor(character);
@@ -969,10 +986,9 @@ function renderSheet() {
     const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
     return `<div class="body-status-cell"><div class="body-status-cell-heading"><strong>${escapeHtml(label)}</strong><span>SP ${escapeHtml(armorSP)}</span></div><div class="body-health-values"><label><span>Current</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></label><label><span>Max</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></label></div></div>`;
   }).join("");
-  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
-    <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
+  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><div class="sheet-tracking"><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form><form class="sheet-eddies-inline" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Eddies</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required aria-label="Eddies balance"></label><button class="button button-quiet" type="submit">Save</button></form></div></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
+    <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${Object.entries(effectiveAttributes).some(([attribute, value]) => attribute !== "EMP" && value !== character.attributes?.[attribute]) ? `<p class="field-hint">Installed cyberware bonuses are added to the base score; boosted values show base → effective.</p>` : ""}${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
     <div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
-    <div class="sheet-bottom-grid"><section class="panel sheet-eddies-panel"><div class="panel-head"><div><p class="section-kicker">CURRENCY</p><h2>Eddies</h2></div></div><div class="panel-body"><form class="eddies-form" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Current balance</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required></label><button class="button button-primary" type="submit">Save</button></form></div></section></div>
     <section class="panel sheet-recent-actions-panel"><div class="panel-head"><h2>Recent actions</h2></div><div class="panel-body"><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div></div></section>`;
 }
 
@@ -1084,6 +1100,7 @@ function renderBoardSide() {
   if (existingTarget != null && Number.isFinite(Number(existingTarget))) boardRollTarget = Number(existingTarget);
   if (existingModifier != null && Number.isFinite(Number(existingModifier))) boardRollModifier = Number(existingModifier);
   const character = currentBoardCharacter();
+  const effectiveAttributes = effectiveAttributesFor(character, itemsForCharacter(character));
   if (character && character.id !== boardRollCharacterId) boardRollCharacterId = character.id;
   const skillsByName = new Map((character?.skills ?? []).map(normalizeSkill).filter(skill => skill.name).map(skill => [skill.name.toLowerCase(), skill]));
   for (const item of itemsForCharacter(character).filter(entry => entry.socketed && entry.chipSkill)) {
@@ -1113,7 +1130,7 @@ function renderBoardSide() {
   target.innerHTML = `<section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">TURN ORDER</p><h2>Initiative</h2></div>${renderInitiative()}</section>
     <section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">${boardIsGm ? "GM ROLLS" : "CHARACTER ROLLS"}</p><h2>${boardIsGm ? "Skill / attack check" : "Roll from your sheet"}</h2></div>${boardIsGm && character ? `<form class="board-roll-form" id="board-roll-form">
       <label class="board-form-field"><span>Character</span><select id="roll-character">${characterOptions}</select></label>
-      <div class="board-form-split"><label class="board-form-field"><span>Attribute</span><select id="roll-attribute">${ATTRIBUTES.map(attribute => `<option value="${attribute}" ${attribute === boardRollAttribute ? "selected" : ""}>${attribute} · ${escapeHtml(attribute === "EMP" ? currentEmpathyFor(character) : character.attributes?.[attribute] ?? 0)}</option>`).join("")}</select></label><label class="board-form-field"><span>Skill</span><select id="roll-skill">${skillOptions}</select></label></div>
+      <div class="board-form-split"><label class="board-form-field"><span>Attribute</span><select id="roll-attribute">${ATTRIBUTES.map(attribute => `<option value="${attribute}" ${attribute === boardRollAttribute ? "selected" : ""}>${attribute} · ${escapeHtml(attribute === "EMP" ? currentEmpathyFor(character) : effectiveAttributes[attribute] ?? 0)}</option>`).join("")}</select></label><label class="board-form-field"><span>Skill</span><select id="roll-skill">${skillOptions}</select></label></div>
       <label class="board-form-field"><span>Weapon (attack only)</span><select id="roll-weapon"><option value="" ${boardRollWeapon ? "" : "selected"}>No weapon selected</option>${weaponOptions.replace(`value="${escapeHtml(boardRollWeapon)}"`, `value="${escapeHtml(boardRollWeapon)}" selected`)}</select></label>
       <div class="board-form-split"><label class="board-form-field"><span>Target</span><input id="roll-target" type="number" value="${escapeHtml(boardRollTarget)}"></label><label class="board-form-field"><span>Modifier</span><input id="roll-modifier" type="number" value="${escapeHtml(boardRollModifier)}"></label></div>
       <p class="roll-formula">1d10 + attribute + skill + modifier vs target. Damage is entered separately.</p>
@@ -1189,7 +1206,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
     const token = {
       id: makeId(), kind: "character", name: character.name, role: character.role || "Character",
       x: Math.min(position.x, BOARD_COLUMNS - 1), y: Math.min(position.y, BOARD_ROWS - 1),
-      width: 1, height: 1, attributes: character.attributes || {},       gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
+      width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
       health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 },
       initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId, portraitUrl: character.portraitUrl || ""
     };
@@ -1244,7 +1261,7 @@ function addCharacterToken(characterId) {
     id: makeId(), kind: "character", name: character.name, role: character.role || "Character",
     x: Math.min(boardState.tokens.length % BOARD_COLUMNS, BOARD_COLUMNS - 1),
     y: Math.min(Math.floor(boardState.tokens.length / BOARD_COLUMNS) % BOARD_ROWS, BOARD_ROWS - 1),
-    width: 1, height: 1, attributes: character.attributes || {}, gear: [...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)],
+    width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)],
     health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || "", portraitUrl: character.portraitUrl || ""
   };
   boardState.tokens.push(token);
@@ -1307,7 +1324,7 @@ function performSheetAttributeRoll(characterId, attribute) {
   const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
   const target = Number(document.getElementById("sheet-roll-target")?.value ?? sheetRollTarget);
   if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
-  const base = attribute === "EMP" ? currentEmpathyFor(character) : Number(character.attributes?.[attribute] || 0);
+  const base = attribute === "EMP" ? currentEmpathyFor(character) : effectiveAttributesFor(character, itemsForCharacter(character))[attribute];
   const die = rollD10();
   const total = die + base + modifier;
   const result = `${attribute} check: d10 ${die} + ${attribute} ${base} + modifier ${modifier} = ${total} vs ${target}. ${total >= target ? "Success" : "Failure"}.`;
@@ -1322,7 +1339,7 @@ function performSheetInitiativeRoll(characterId) {
   if (!character) return showToast("Choose a character before rolling initiative.", true);
   const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
   if (!Number.isFinite(modifier)) return showToast("Enter a valid modifier.", true);
-  const base = Number(character.attributes?.REF || 0);
+  const base = effectiveAttributesFor(character, itemsForCharacter(character)).REF;
   const die = rollD10();
   const total = die + base + modifier;
   const result = `Initiative roll: d10 ${die} + REF ${base} + modifier ${modifier} = ${total}.`;
@@ -1347,7 +1364,7 @@ function performSheetSkillRoll(characterId, requestedSkill = "", requestedAttrib
   const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
   const target = Number(document.getElementById("sheet-roll-target")?.value ?? sheetRollTarget);
   if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
-  const base = attribute === "EMP" ? currentEmpathyFor(character) : Number(character.attributes?.[attribute] || 0);
+  const base = attribute === "EMP" ? currentEmpathyFor(character) : effectiveAttributesFor(character, itemsForCharacter(character))[attribute];
   const die = rollD10();
   const total = die + base + skillValue + modifier;
   const skillBreakdown = chipBonus ? `${naturalSkillValue} natural + ${chipBonus} chip = ${skillValue}` : `${skillValue}`;
@@ -1408,7 +1425,7 @@ async function performSheetAttackRoll(button) {
     }
   }
   const skill = weaponSkillFor(character, item);
-  const base = Number(character.attributes?.REF || 0);
+  const base = effectiveAttributesFor(character, itemsForCharacter(character)).REF;
   const bonus = weaponAttackTotal(0, base, skill.value, item);
   const die = rollD10();
   const total = weaponAttackTotal(die, base, skill.value, item);
@@ -1475,7 +1492,7 @@ function performRoll(rollKind) {
   const skillName = selectedSkill?.value || "";
   const skillValue = Number(selectedSkill?.dataset.skillValue || 0);
   const attribute = document.getElementById("roll-attribute")?.value || "REF";
-  const base = attribute === "EMP" ? currentEmpathyFor(character) : Number(character.attributes?.[attribute] || 0);
+  const base = attribute === "EMP" ? currentEmpathyFor(character) : effectiveAttributesFor(character, itemsForCharacter(character))[attribute];
   const modifier = Number(document.getElementById("roll-modifier")?.value || 0);
   const target = Number(document.getElementById("roll-target")?.value);
   if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
@@ -1824,6 +1841,26 @@ function selectField(label, name, options, selected, allowBlank = false) {
   return `<label class="form-field"><span class="field-label">${escapeHtml(label)}</span><select class="field-select" name="${escapeHtml(name)}">${allowBlank ? `<option value="">Unassigned</option>` : ""}${rows}</select></label>`;
 }
 
+function attributeBonusFields(item) {
+  const [attribute, bonus] = Object.entries(normalizeAttributeBonuses(item?.attributeBonuses, item?.category))[0] || ["", ""];
+  return `<section class="form-field full" data-cyberware-attribute-section hidden>
+    <span class="field-label">Cyberware attribute effect</span>
+    <span class="field-hint">Optional table-entered modifier. It applies only while this cyberware is installed and does not change the character's base attribute.</span>
+    <div class="form-grid">${selectField("Attribute", "attributeBonusAttribute", ATTRIBUTES.filter(value => value !== "EMP").map(value => ({ value, label: value })), attribute, true)}
+    ${field("Modifier", "attributeBonusValue", bonus, { type: "number", min: -100, max: 100, step: 1 })}</div>
+  </section>`;
+}
+
+function attributeBonusesFromForm(data) {
+  const attribute = String(data.get("attributeBonusAttribute") || "");
+  const rawBonus = String(data.get("attributeBonusValue") || "").trim();
+  if (!attribute && !rawBonus) return {};
+  const bonus = Number(rawBonus);
+  if (!ATTRIBUTES.includes(attribute) || attribute === "EMP" || !rawBonus
+    || !Number.isInteger(bonus) || bonus < -100 || bonus > 100) return null;
+  return bonus ? { [attribute]: bonus } : {};
+}
+
 function bodyStatusFields(character) {
   const rows = BODY_LOCATIONS.map(({ key, label }) => {
     const health = character?.bodyHealth?.[key] || {};
@@ -1959,6 +1996,106 @@ function updateSkillAllocation(form) {
   status.classList.toggle("is-over", invalidPoints || allocated > 40);
 }
 
+function editorSkillRow(skill, index, selected = false) {
+  const id = `edit-skill-${index}`;
+  const points = Number.isInteger(Number(skill.value)) ? Number(skill.value) : 0;
+  return `<div class="skill-picker-row edit-skill-row"><label for="${id}"><input id="${id}" type="checkbox" name="editSkill" value="${escapeHtml(skill.name)}" data-special="${Boolean(skill.special)}" ${selected ? "checked" : ""}><span>${escapeHtml(skill.name)}</span></label><input class="skill-point-input" type="number" name="editSkillPoints" min="-100" max="100" step="1" value="${points}" ${selected ? "" : "disabled"} aria-label="Points for ${escapeHtml(skill.name)}"></div>`;
+}
+
+function characterSkillPicker(character) {
+  const existingSkills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
+  const existingByName = new Map(existingSkills.map(skill => [skill.name.toLowerCase(), skill]));
+  const normalNames = new Set(NORMAL_SKILL_GROUPS.flatMap(group => group.skills.map(skill => skill.toLowerCase())));
+  const specialNames = new Set(SPECIAL_SKILLS.map(skill => skill.toLowerCase()));
+  const groups = [
+    {
+      key: "SPECIAL",
+      label: "Special",
+      skills: [...SPECIAL_SKILLS.map(name => ({ name, special: true })), ...existingSkills.filter(skill =>
+        skill.special && !specialNames.has(skill.name.toLowerCase())
+      )]
+    },
+    ...NORMAL_SKILL_GROUPS.map(group => ({
+      key: group.attribute,
+      label: group.attribute === "REF" ? "Reflex" : group.attribute,
+      skills: group.skills
+        .filter(name => !existingByName.get(name.toLowerCase())?.special)
+        .map(name => ({ name, special: false }))
+    })),
+    {
+      key: "OTHER",
+      label: "Other",
+      skills: existingSkills.filter(skill => !skill.special && !normalNames.has(skill.name.toLowerCase()))
+    }
+  ];
+  let skillIndex = 0;
+  const tabs = groups.map((group, index) => `<button id="edit-skill-tab-${index}" class="inventory-tab ${index === 0 ? "active" : ""}" type="button" role="tab" aria-selected="${index === 0}" aria-controls="edit-skill-panel-${index}" data-edit-skill-tab="${index}" data-skill-editor-category="${group.key}">${escapeHtml(group.label)} <span>${group.skills.length}</span></button>`).join("");
+  const panels = groups.map((group, index) => {
+    const rows = group.skills.map(skill => {
+      const current = existingByName.get(skill.name.toLowerCase());
+      const row = editorSkillRow({ ...skill, value: current?.value ?? 0 }, skillIndex++, Boolean(current));
+      return row;
+    }).join("");
+    const addCustomSkill = group.key === "OTHER"
+      ? `<div class="skill-editor-add"><label class="sr-only" for="edit-new-skill">Custom skill name</label><input class="field-input" id="edit-new-skill" name="newSkill" maxlength="80" placeholder="Add a custom skill"><button class="button button-quiet" type="button" data-action="add-editor-skill">＋ Add skill</button></div>`
+      : "";
+    return `<section class="skill-picker-group edit-skill-panel" id="edit-skill-panel-${index}" data-skill-editor-panel="${group.key}" role="tabpanel" aria-labelledby="edit-skill-tab-${index}" ${index === 0 ? "" : "hidden"}><h4>${escapeHtml(group.label)}</h4>${rows || `<p class="field-hint">No skills in this category.</p>`}${addCustomSkill}</section>`;
+  }).join("");
+  return `<section class="form-field full skill-creation-fields character-skill-editor"><div><span class="field-label">Skills</span><span class="field-hint">Select the character's skills and set each rating. There is no total-points limit; skill ratings must be whole numbers from -100 to 100. Add table-specific skills under Other.</span></div><div class="skill-editor-picker"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${tabs}</div><div class="skill-picker-list">${panels}</div></div></section>`;
+}
+
+function editedSkillsFromForm(form) {
+  const rows = [...form.querySelectorAll(".edit-skill-row")].filter(row => row.querySelector('[name="editSkill"]').checked);
+  if (rows.length > 100) {
+    showToast("A character can have up to 100 skills.", true);
+    return null;
+  }
+  const seen = new Set();
+  const skills = [];
+  for (const row of rows) {
+    const checkbox = row.querySelector('[name="editSkill"]');
+    const name = checkbox.value.trim();
+    const value = Number(row.querySelector('[name="editSkillPoints"]').value);
+    if (!name || !Number.isInteger(value) || value < -100 || value > 100) {
+      showToast("Selected skill ratings must be whole numbers from -100 to 100.", true);
+      row.querySelector('[name="editSkillPoints"]').focus();
+      return null;
+    }
+    if (seen.has(name.toLowerCase())) {
+      showToast(`The skill "${name}" is selected more than once.`, true);
+      checkbox.focus();
+      return null;
+    }
+    seen.add(name.toLowerCase());
+    skills.push({ name, value, special: checkbox.dataset.special === "true" });
+  }
+  return skills;
+}
+
+function addEditorSkill(button) {
+  const form = button.closest('form[name="character-form"]');
+  const input = form?.elements.newSkill;
+  const name = String(input?.value || "").trim();
+  if (!form || !input || !name) return showToast("Enter a skill name first.", true);
+  if ([...form.querySelectorAll('[name="editSkill"]')].some(skill => skill.value.toLowerCase() === name.toLowerCase())) {
+    showToast(`"${name}" is already in the skill list.`, true);
+    input.focus();
+    return;
+  }
+  const otherPanel = form.querySelector('[data-skill-editor-panel="OTHER"]');
+  const addControl = otherPanel?.querySelector(".skill-editor-add");
+  if (!otherPanel || !addControl) return showToast("Could not add the custom skill.", true);
+  const row = document.createElement("div");
+  row.innerHTML = editorSkillRow({ name, value: 1, special: false }, form.querySelectorAll(".edit-skill-row").length, true);
+  const skillRow = row.firstElementChild;
+  otherPanel.insertBefore(skillRow, addControl);
+  const otherTab = form.querySelector('[data-skill-editor-category="OTHER"]');
+  const count = otherTab?.querySelector("span");
+  if (count) count.textContent = otherPanel.querySelectorAll(".edit-skill-row").length;
+  input.value = "";
+  skillRow.querySelector('[name="editSkillPoints"]')?.focus();
+}
+
 function startingSkillPicker() {
   const groups = NORMAL_SKILL_GROUPS.map((group, groupIndex) => `<section class="skill-picker-group"><h4>${escapeHtml(group.attribute)}</h4>${group.skills.map((skill, skillIndex) => {
     const id = `normal-skill-${groupIndex}-${skillIndex}`;
@@ -1977,9 +2114,7 @@ function openCharacterForm(character) {
     <label class="form-field full attribute-method-panel" data-attribute-panel="cinematic" hidden><span class="field-label">Cinematic tier</span><select class="field-select" name="cinematicTier"><option value="">Choose a tier</option>${CINEMATIC_ATTRIBUTE_TIERS.map(tier => `<option value="${tier.value}">${tier.label} — ${tier.points} points</option>`).join("")}</select></label>
     <input type="hidden" name="attributeRolls" value="">
     <div class="attribute-points-status form-field full" id="attribute-points-status" aria-live="polite"></div>`;
-  const skillFields = character
-    ? field("Skills", "skills", skillText(character.skills ?? []), { full: true, hint: "Separate skills with commas. Add a table-entered value with a colon, e.g. Handgun: 6. You can add skills beyond the initial creation selections." })
-    : startingSkillPicker();
+  const skillFields = character ? characterSkillPicker(character) : startingSkillPicker();
   const body = `${field("Character name", "name", character?.name ?? "", { required: true })}${field("Role / class", "role", character?.role ?? "")}
     ${field("Handle / callsign", "handle", character?.handle ?? "")}${attributeCreation}<div class="form-field full"><span class="field-label">Attributes</span><div class="attributes-form">${attrs}</div></div>
     ${skillFields}
@@ -1992,8 +2127,8 @@ function openCharacterForm(character) {
   dialogContent.innerHTML = formShell(character ? "Edit character" : "Create a character", character ? "Build a sheet with the details that matter at your table." : "Roll 9d10 or choose a cinematic pool; allocate every point, with a maximum of 10 per attribute.", "character-form", body, character ? "Save character" : "Create character");
   if (character) dialogContent.querySelector("form").dataset.id = character.id;
   dialog.showModal();
+  const form = dialogContent.querySelector('form[name="character-form"]');
   if (!character) {
-    const form = dialogContent.querySelector('form[name="character-form"]');
     updateAttributeAllocation(form);
     updateSkillAllocation(form);
   }
@@ -2035,6 +2170,7 @@ function openGearForm(item, characterId = "") {
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
     ${field("Humanity loss per install", "humanityLoss", item?.humanityLoss ?? "", { hint: "For example 0.5, 1D6/2, or 1D6/pair. Blank cyberware values default to 5." })}
     ${field("Humanity cost note", "humanityCost", item?.humanityCost ?? "", { hint: "Optional table notation or dice formula for reference." })}
+    ${attributeBonusFields(item)}
     ${field("Source citation", "sourceReference", item?.sourceReference ?? "", { full: true, hint: "Optional book and page reference." })}
     <div class="form-field full chip-config-fields"><span class="field-label">Skill chip setup · cyberware only</span><span class="field-hint">Link a skill chip to a skill and enter its table-specific bonus. Socketed chips appear in the character-sheet summary.</span><div class="chip-config-row">${field("Chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Leave blank for non-skill-chip cyberware." })}<label class="form-field"><span class="field-label">Chip bonus</span><input class="field-input" type="number" name="chipBonus" min="0" max="9999" step="1" value="${escapeHtml(item?.chipBonus ?? "")}"></label></div><label class="chip-socket-toggle"><input type="checkbox" name="socketed" ${item?.socketed ? "checked" : ""}><span>Socket this skill chip</span></label></div>
     ${field("Custom notes", "customNotes", item?.customNotes ?? "", { full: true, textarea: true })}`;
@@ -2093,6 +2229,7 @@ function openCatalogItemForm(item) {
       <div class="form-grid">
         ${field("Humanity loss per install", "humanityLoss", item?.humanityLoss ?? "", { hint: "For example 0.5, 1D6/2, or 1D6/pair. Blank cyberware values default to 5." })}
         ${field("Humanity cost note", "humanityCost", item?.humanityCost ?? "", { hint: "Optional table notation or dice formula for reference." })}
+        ${attributeBonusFields(item)}
         ${field("Skill chip skill", "chipSkill", item?.chipSkill ?? "", { hint: "Optional; use for a cyberware chip that grants a skill." })}
         ${field("Price per chip level", "pricePerLevel", item?.pricePerLevel ?? "", { type: "number", min: 1, hint: "Optional numeric Eddies price for each chip level." })}
         ${field("Flat purchase price", "purchaseCost", item?.purchaseCost ?? "", { type: "number", min: 1, hint: "Optional fixed price for a non-levelled catalog item." })}
@@ -2152,6 +2289,7 @@ function updateCatalogWeaponFields(form) {
   const legacyWeaponFields = form.querySelector("[data-legacy-weapon-fields]");
   weaponFields.hidden = !isWeapon;
   nonweaponFields.hidden = isWeapon;
+  updateCyberwareAttributeFields(form, isCyberware);
   if (legacyWeaponFields) {
     legacyWeaponFields.hidden = isCyberware;
     legacyWeaponFields.querySelectorAll("input, select, textarea").forEach(control => {
@@ -2178,7 +2316,16 @@ function updateGearItemFields(form) {
   legacyFields.querySelectorAll("input, select, textarea").forEach(control => {
     control.disabled = isCyberware;
   });
+  updateCyberwareAttributeFields(form, isCyberware);
   updateCyberwareWeaponFields(form, isCyberware);
+}
+
+function updateCyberwareAttributeFields(form, isCyberware) {
+  const section = form.querySelector("[data-cyberware-attribute-section]");
+  section.hidden = !isCyberware;
+  section.querySelectorAll("input, select").forEach(control => {
+    control.disabled = !isCyberware;
+  });
 }
 
 function updateCyberwareWeaponFields(form, isCyberware) {
@@ -2439,6 +2586,7 @@ async function addCatalogItemToCharacter(characterId, catalogId) {
   const updatedCharacter = { ...character, inventory: [...(character.inventory || []), {
     id: makeId(), catalogId: catalogItem.id, name: catalogItem.name, category: catalogItem.category, quantity: 1, equipped: false,
     chipSkill: catalogItem.chipSkill || "", chipBonus: null, socketed: false,
+    attributeBonuses: catalogItem.attributeBonuses || {},
     description: catalogItem.description, weaponType: catalogItem.weaponType, ammoType: combat.ammoType,
     ammoLoaded: usesAmmunition(catalogItem) ? combat.capacity : null, weaponStats: catalogItem.weaponStats,
     weight: catalogItem.weight, cost: catalogItem.cost, humanityCost: catalogItem.humanityCost, humanityLoss: humanityLossForItem(catalogItem),
@@ -2799,7 +2947,8 @@ function persistForm(form) {
       return showToast("Attributes must be whole numbers from 0 to 10.", true);
     }
     let attributeGeneration;
-    let skills = skillEntries(data.get("skills"), previous?.skills ?? []);
+    let skills = previous ? editedSkillsFromForm(form) : [];
+    if (previous && !skills) return;
     let skillGeneration;
     if (!previous) {
       const method = form.querySelector('[name="attributeMethod"]:checked')?.value;
@@ -2875,6 +3024,7 @@ function persistForm(form) {
     const category = String(data.get("category") ?? "Other");
     const chipSkill = String(data.get("chipSkill") ?? "").trim();
     const chipBonus = readOptionalFormInteger(data, "chipBonus", 9999);
+    const attributeBonuses = category.toLowerCase() === "cyberware" ? attributeBonusesFromForm(data) : {};
     const humanityLoss = String(data.get("humanityLoss") ?? "").trim();
     const socketed = Boolean(data.get("socketed"));
     let weaponType = String(data.get("weaponType") ?? "").trim();
@@ -2883,6 +3033,7 @@ function persistForm(form) {
     const previousAmmoType = ammoType || weaponCombatData({ weaponStats: String(data.get("legacyWeaponStats") ?? "") }).ammoType;
     let ammoLoaded = storedInventory?.ammoLoaded ?? storedGear?.ammoLoaded ?? null;
     if (chipBonus === undefined) return showToast("Skill-chip bonuses must be whole numbers from 0 to 9,999.", true);
+    if (attributeBonuses === null) return showToast("Choose a supported attribute and enter a whole-number cyberware modifier from -100 to 100.", true);
     if (category.toLowerCase() === "cyberware" && !validHumanityLossNotation(humanityLoss || "5")) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
     }
@@ -2931,6 +3082,7 @@ function persistForm(form) {
       customNotes: String(data.get("customNotes") ?? "").trim(),
       sourceReference: String(data.get("sourceReference") ?? "").trim(),
       chipSkill, chipBonus: chipSkill ? chipBonus ?? 0 : null, socketed,
+      attributeBonuses,
       equipped: Boolean(storedGear?.equipped || storedInventory?.equipped),
       humanityCharged: Boolean(storedGear?.humanityCharged || storedInventory?.humanityCharged),
       humanityLossPaid: storedGear?.humanityLossPaid ?? storedInventory?.humanityLossPaid ?? 0,
@@ -2952,7 +3104,8 @@ function persistForm(form) {
         humanityLoss: item.humanityLoss,
         humanityCharged: item.humanityCharged, humanityLossPaid: item.humanityLossPaid,
         sourceReference: item.sourceReference, customNotes: item.customNotes,
-        chipSkill: item.chipSkill, chipBonus: item.chipBonus, socketed: item.socketed, equipped: item.equipped
+        chipSkill: item.chipSkill, chipBonus: item.chipBonus, socketed: item.socketed, equipped: item.equipped,
+        attributeBonuses: item.attributeBonuses
       };
       owner.inventory = owner.inventory || [];
       if (owner.inventory.some(entry => entry.id === id)) owner.inventory = owner.inventory.map(entry => entry.id === id ? inventoryItem : entry);
@@ -2979,12 +3132,14 @@ function persistForm(form) {
     const purchaseCost = readOptionalFormInteger(data, "purchaseCost", 999999999);
     const category = String(data.get("category") || "Other").trim();
     const humanityLoss = String(data.get("humanityLoss") || "").trim();
+    const attributeBonuses = category.toLowerCase() === "cyberware" ? attributeBonusesFromForm(data) : {};
     if (pricePerLevel === undefined || purchaseCost === undefined || pricePerLevel === 0 || purchaseCost === 0) {
       return showToast("Catalog prices must be positive whole Eddies amounts.", true);
     }
     if (category.toLowerCase() === "cyberware" && !validHumanityLossNotation(humanityLoss || "5")) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
     }
+    if (attributeBonuses === null) return showToast("Choose a supported attribute and enter a whole-number cyberware modifier from -100 to 100.", true);
     let weaponData = null;
     let cyberwareCombatData = null;
     if (category.toLowerCase() === "weapon") {
@@ -3019,6 +3174,7 @@ function persistForm(form) {
       weight: String(data.get("weight") || "").trim(), cost: String(data.get("cost") || "").trim(),
       humanityCost: String(data.get("humanityCost") || "").trim(),
       chipSkill: String(data.get("chipSkill") || "").trim(), pricePerLevel, purchaseCost,
+      attributeBonuses,
       sourceReference: String(data.get("sourceReference") || "").trim(),
       customNotes: String(data.get("customNotes") || "").trim()
     });
@@ -3254,6 +3410,7 @@ function handleAction(button) {
     const form = button.closest('form[name="character-form"]');
     if (form) rollAttributePointPool(form);
   }
+  if (action === "add-editor-skill") addEditorSkill(button);
   if (action === "roll") performRoll(button.dataset.rollKind);
   if (action === "select-board-token") {
     selectedBoardTokenId = id;
@@ -3399,6 +3556,20 @@ document.addEventListener("click", event => {
     openForm(create.dataset.new);
     return;
   }
+  const editorSkillTab = event.target.closest("[data-edit-skill-tab]");
+  if (editorSkillTab) {
+    const form = editorSkillTab.closest('form[name="character-form"]');
+    const selectedIndex = editorSkillTab.dataset.editSkillTab;
+    form?.querySelectorAll("[data-edit-skill-tab]").forEach(tab => {
+      const active = tab.dataset.editSkillTab === selectedIndex;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+    });
+    form?.querySelectorAll("[data-skill-editor-panel]").forEach(panel => {
+      panel.hidden = panel.id !== `edit-skill-panel-${selectedIndex}`;
+    });
+    return;
+  }
   const sheetSection = event.target.closest("[data-sheet-tab]");
   if (sheetSection) {
     sheetTab = sheetSection.dataset.sheetTab;
@@ -3511,6 +3682,10 @@ document.addEventListener("change", event => {
   const characterForm = event.target.closest('form[name="character-form"]');
   if (characterForm && ["attributeMethod", "cinematicTier"].includes(event.target.name)) updateAttributeAllocation(characterForm);
   if (characterForm && ["normalSkill", "specialSkill"].includes(event.target.name)) updateSkillAllocation(characterForm);
+  if (characterForm && event.target.name === "editSkill") {
+    const points = event.target.closest(".edit-skill-row")?.querySelector('[name="editSkillPoints"]');
+    if (points) points.disabled = !event.target.checked;
+  }
   if (event.target.id === "catalog-file") {
     const file = event.target.files?.[0];
     if (file) void importCatalogFile(file);
