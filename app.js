@@ -24,6 +24,8 @@ import { renderCharacters as renderCharactersView } from "./client/features/char
 import {
   ATTRIBUTES,
   BODY_LOCATIONS,
+  armorCalculationFor,
+  armorLoadoutError,
   currentEmpathyFor,
   currentHumanityFor,
   effectiveAttributesFor,
@@ -37,8 +39,10 @@ import {
   normalizeSkill,
   normalizeAttributeBonuses,
   readOptionalFormInteger,
+  playerCharacterCount,
   startingHumanityFor,
   staticHumanityLoss,
+  validArmorItem,
   validHumanityLossNotation
 } from "./shared/character-domain.js";
 
@@ -120,7 +124,7 @@ function demoWorkspace() {
         id: renId, name: "Ren Kaito", role: "Solo", handle: "Kestrel",
         attributes: { INT: 7, REF: 8, TECH: 5, COOL: 6, ATTR: 5, LUCK: 6, MA: 7, BODY: 6, EMP: 5 },
         skills: [{ name: "Awareness", value: 5 }, { name: "Handgun", value: 6 }, { name: "Stealth", value: 4 }, { name: "First Aid", value: 3 }, { name: "Streetwise", value: 4 }],
-        healthCurrent: 18, healthMax: 24, eddies: 1200,
+        healthCurrent: 0, eddies: 1200,
         history: "Former corporate security. The job ended; the debts did not.",
         notes: "Keep one eye on the exits. Never take a second meeting at the same place.",
         createdAt: new Date().toISOString()
@@ -129,7 +133,7 @@ function demoWorkspace() {
         id: ivyId, name: "Ivy Vex", role: "Techie", handle: "Patch",
         attributes: { INT: 8, REF: 6, TECH: 9, COOL: 6, ATTR: 4, LUCK: 5, MA: 5, BODY: 5, EMP: 7 },
         skills: [{ name: "Electronics", value: 7 }, { name: "Cybertech", value: 6 }, { name: "Basic Tech", value: 7 }, { name: "Education", value: 5 }, { name: "Bargain", value: 3 }],
-        healthCurrent: 20, healthMax: 20, eddies: 850,
+        healthCurrent: 0, eddies: 850,
         history: "Neighborhood tech who can make old machines sing.",
         notes: "Has a contact in the southside repair market.",
         createdAt: new Date().toISOString()
@@ -299,7 +303,9 @@ function updateAccountControls() {
   const name = document.getElementById("account-name");
   const button = document.getElementById("account-button");
   if (!name || !button) return;
-  name.textContent = signedInAccount ? `${signedInAccount.username} · ${signedInAccount.characters.length}/10` : "Local workspace";
+  name.textContent = signedInAccount
+    ? `${signedInAccount.username} · ${playerCharacterCount(signedInAccount.characters)}/${MAX_CHARACTERS_PER_ACCOUNT} player characters`
+    : "Local workspace";
   button.textContent = signedInAccount ? "Sign out" : "Sign in";
   button.dataset.action = signedInAccount ? "sign-out" : "open-auth";
   button.setAttribute("aria-label", signedInAccount ? `Sign out ${signedInAccount.username}` : "Sign in or create an account");
@@ -493,20 +499,34 @@ function itemsForCharacter(character) {
     if (!items.some(existing => existing.id === item.id)) items.push(item);
   }
   return items.map(item => {
-    if (String(item.category || "").toLowerCase() !== "cyberware") return item;
     const catalogItem = (workspace.catalog || []).find(entry => item.catalogId && entry.id === item.catalogId)
       || (workspace.catalog || []).find(entry =>
-        entry.name.toLowerCase() === String(item.name || "").toLowerCase()
-        && entry.category.toLowerCase() === String(item.category || "").toLowerCase()
+        String(entry.name).toLowerCase() === String(item.name || "").toLowerCase()
+        && String(entry.category).toLowerCase() === String(item.category || "").toLowerCase()
       );
     if (!catalogItem) return item;
+    const cyberware = String(item.category || "").toLowerCase() === "cyberware";
     return {
       ...item,
-      weaponType: item.weaponType || catalogItem.weaponType || "",
-      weaponStats: item.weaponStats || catalogItem.weaponStats || "",
-      attributeBonuses: Object.keys(item.attributeBonuses || {}).length
-        ? item.attributeBonuses
-        : catalogItem.attributeBonuses || {}
+      ...(cyberware ? {
+        weaponType: item.weaponType || catalogItem.weaponType || "",
+        weaponStats: item.weaponStats || catalogItem.weaponStats || "",
+        attributeBonuses: Object.keys(item.attributeBonuses || {}).length
+          ? item.attributeBonuses
+          : catalogItem.attributeBonuses || {}
+      } : {}),
+      armorSP: item.armorSP ?? catalogItem.armorSP ?? null,
+      armorEV: item.armorEV ?? catalogItem.armorEV ?? null,
+      armorLocations: item.armorLocations?.length ? item.armorLocations : catalogItem.armorLocations || [],
+      armorClass: item.armorClass || catalogItem.armorClass || null,
+      armorLayerType: item.armorLayerType === "standard" && catalogItem.armorLayerType
+        ? catalogItem.armorLayerType
+        : item.armorLayerType || catalogItem.armorLayerType || "standard",
+      armorLayerOrder: item.armorLayerType === "skinweave" || catalogItem.armorLayerType === "skinweave"
+        ? 0
+        : String(item.category || "").toLowerCase() === "cyberware"
+          ? 1
+          : item.armorLayerOrder ?? catalogItem.armorLayerOrder ?? 1
     };
   });
 }
@@ -545,9 +565,9 @@ function attributeForSkill(skillName) {
 
 function inventoryItemsForTab(inventory, tab) {
   if (tab === "cyberware") return inventory.filter(item => String(item.category || "").toLowerCase() === "cyberware");
-  if (tab === "style") return inventory.filter(item => String(item.category || "").toLowerCase() === "style");
+  if (tab === "style") return inventory.filter(item => ["style", "armor", "clothing"].includes(String(item.category || "").toLowerCase()));
   if (tab === "weapons") return inventory.filter(item => isWeaponItem(item));
-  return inventory.filter(item => !["cyberware", "style", "weapon"].includes(String(item.category || "").toLowerCase()));
+  return inventory.filter(item => !["cyberware", "style", "armor", "clothing", "weapon"].includes(String(item.category || "").toLowerCase()));
 }
 
 function weaponSkillFor(character, item) {
@@ -597,7 +617,7 @@ function renderRecentSheetActions(character) {
   const history = sheetActionHistory[character.id] || [];
   return history.length
     ? `<div class="sheet-recent-action-list">${history.map((result, index) => `<p class="sheet-recent-action ${index ? "" : "current"}">${escapeHtml(result)}</p>`).join("")}</div>`
-    : `<p class="field-hint">Recent rolls and finalized health changes will appear here.</p>`;
+    : `<p class="field-hint">Recent rolls and finalized damage changes will appear here.</p>`;
 }
 
 function renderDiceRoller() {
@@ -624,15 +644,12 @@ function performFreeDiceRoll(form) {
   if (character) rememberSheetAction(character, `Dice roll: ${result}.`);
 }
 
-function recordCharacterHealthChange(previousCharacter, updatedCharacter) {
+function recordCharacterDamageChange(previousCharacter, updatedCharacter) {
   if (previousCharacter?.healthCurrent == null || updatedCharacter.healthCurrent == null) return;
   const delta = Number(updatedCharacter.healthCurrent) - Number(previousCharacter.healthCurrent);
   if (!Number.isFinite(delta) || delta === 0) return;
   const sign = delta > 0 ? "+" : "";
-  const current = updatedCharacter.healthMax == null
-    ? ` (${updatedCharacter.healthCurrent})`
-    : ` (${updatedCharacter.healthCurrent}/${updatedCharacter.healthMax})`;
-  rememberSheetAction(updatedCharacter, `${updatedCharacter.name}: ${sign}${delta} Health${current}.`);
+  rememberSheetAction(updatedCharacter, `${updatedCharacter.name}: ${sign}${delta} damage (${updatedCharacter.healthCurrent} total).`);
 }
 
 function initials(name = "?") {
@@ -645,9 +662,10 @@ function characterCard(character) {
     const base = attribute === "EMP"
       ? `[${character.attributes?.EMP ?? "—"}/${currentEmpathyFor(character)}]`
       : character.attributes?.[attribute] ?? "—";
-    const value = attribute === "EMP" || attributes[attribute] === character.attributes?.[attribute]
-      ? base
-      : `${character.attributes?.[attribute] ?? "—"} → ${attributes[attribute]}`;
+    const changed = attribute !== "EMP" && attributes[attribute] !== character.attributes?.[attribute];
+    const value = attribute === "REF"
+      ? `[${character.attributes?.REF ?? "—"}/${attributes.REF ?? "—"}]`
+      : changed ? `${character.attributes?.[attribute] ?? "—"} → ${attributes[attribute]}` : base;
     return `<div class="attr-cell"><span>${attribute}</span><strong>${escapeHtml(value)}</strong></div>`;
   }).join("");
   const portrait = character.portraitUrl
@@ -768,7 +786,10 @@ function renderCampaigns() {
 }
 
 function itemDetail(item) {
-  return [item.weaponType, item.weaponStats, item.customNotes, item.details, item.description, item.sourceReference].filter(Boolean).join(" · ") || "No details";
+  return [
+    item.armorClass ? `${item.armorClass} armor` : "",
+    item.weaponType, item.weaponStats, item.customNotes, item.details, item.description, item.sourceReference
+  ].filter(Boolean).join(" · ") || "No details";
 }
 
 function renderCatalogSearchResults() {
@@ -859,8 +880,11 @@ function renderInventoryPanel(character, inventory) {
     const attributeDetail = Object.entries(normalizeAttributeBonuses(item.attributeBonuses, item.category))
       .map(([attribute, bonus]) => `<span class="gear-detail">${escapeHtml(attribute)} ${bonus > 0 ? "+" : ""}${escapeHtml(bonus)} ${item.equipped ? "active" : "when installed"}</span>`)
       .join("");
+    const armorDetails = item.armorSP != null || item.armorEV != null || item.armorClass || item.armorLocations?.length
+      ? `<span class="gear-detail">${item.armorClass ? `${escapeHtml(item.armorClass)} armor · ` : ""}${item.armorSP == null ? "SP not set" : `SP ${escapeHtml(item.armorSP)}`} · ${item.armorEV == null ? "EV not set" : `EV ${escapeHtml(item.armorEV)}`}${item.armorLocations?.length ? ` · ${item.armorLocations.map(key => BODY_LOCATIONS.find(location => location.key === key)?.label || key).map(escapeHtml).join(", ")}` : ""}</span>`
+      : "";
     return `<tr>
-      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(ammunition ? `${item.category} · ${item.quantity} rounds` : `${item.weaponType || item.category || "Item"} · QTY ${item.quantity}`)}</span>${attributeDetail}${chipDetail}</td>
+      <td><strong>${escapeHtml(item.name)}</strong><span class="gear-detail">${escapeHtml(ammunition ? `${item.category} · ${item.quantity} rounds` : `${item.weaponType || item.category || "Item"} · QTY ${item.quantity}`)}</span>${armorDetails}${attributeDetail}${chipDetail}</td>
       ${cyberware ? `<td>HL ${escapeHtml(humanityLossForItem(item))}${item.humanityCost ? ` · ${escapeHtml(item.humanityCost)}` : ""}${paidDetail}</td>` : `<td>${escapeHtml(item.cost || "—")}</td>`}
       <td>${ammunition ? `<span class="inventory-equipped">${Number(item.quantity) > 0 ? "In stock" : "Empty"}</span>` : `<label class="inventory-equipped" for="${checkId}"><input id="${checkId}" type="checkbox" data-action="toggle-equipped" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}" aria-label="${cyberware ? `${installAction} ${escapeHtml(item.name)}` : `Equip ${escapeHtml(item.name)}`}" ${item.equipped ? "checked" : ""}><span>${cyberware ? item.equipped ? "Installed" : "Install" : "Equipped"}</span></label>`}${item.chipSkill ? `<button class="text-button inventory-socket-toggle" type="button" data-action="toggle-socketed" data-id="${escapeHtml(item.id)}" data-character-id="${escapeHtml(character.id)}">${item.socketed ? "Unsocket chip" : "Socket chip"}</button>` : ""}</td>
       <td class="inventory-item-actions"><button class="icon-button" type="button" data-action="edit-gear" data-id="${escapeHtml(item.id)}" aria-label="Edit ${escapeHtml(item.name)}">✎</button><button class="icon-button" type="button" data-action="delete-gear" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button></td>
@@ -870,11 +894,11 @@ function renderInventoryPanel(character, inventory) {
   const heading = inventoryTab === "cyberware" ? "CYBERWARE · HUMANITY LOSS" : inventoryTab === "weapons" ? "WEAPON INVENTORY" : `${tabLabel.toUpperCase()} INVENTORY`;
   const emptyLabel = inventoryTab === "cyberware" ? "No cyberware yet." : inventoryTab === "style" ? "No style items yet." : inventoryTab === "weapons" ? "No weapons yet." : "No gear items yet.";
   return `<section class="panel sheet-inventory-panel">
-    <div class="panel-head"><div><p class="section-kicker">INVENTORY</p><h2>${escapeHtml(character.name)}'s items</h2></div><div class="sheet-inventory-actions"><button class="button button-quiet" type="button" data-action="open-catalog-search" data-character-id="${escapeHtml(character.id)}">Catalog</button><button class="button button-primary" type="button" data-action="open-custom-gear" data-character-id="${escapeHtml(character.id)}">＋ Add</button></div></div>
+    <div class="panel-head"><div><p class="section-kicker">INVENTORY</p><h2>${escapeHtml(character.name)}'s items</h2></div><div class="sheet-inventory-actions"><button class="button button-primary" type="button" data-action="open-catalog-search" data-character-id="${escapeHtml(character.id)}">Catalog</button></div></div>
     <div class="panel-body"><div class="inventory-tabs" role="tablist" aria-label="Inventory categories">${tabs.map(tab => {
       const count = inventoryItemsForTab(inventory, tab.key).length;
       return `<button class="inventory-tab ${inventoryTab === tab.key ? "active" : ""}" type="button" role="tab" aria-selected="${inventoryTab === tab.key}" data-inventory-tab="${tab.key}">${escapeHtml(tab.label)} <span>${count}</span></button>`;
-    }).join("")}</div><div class="table-wrap sheet-inventory-table"><table class="gear-table inventory-list-table"><thead><tr><th>ITEM</th><th>${escapeHtml(heading)}</th><th>STATUS</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${itemRows || `<tr><td colspan="4" class="table-empty">${emptyLabel} Add items from the catalog or create a custom entry.</td></tr>`}</tbody></table></div></div>
+    }).join("")}</div><div class="table-wrap sheet-inventory-table"><table class="gear-table inventory-list-table"><thead><tr><th>ITEM</th><th>${escapeHtml(heading)}</th><th>STATUS</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${itemRows || `<tr><td colspan="4" class="table-empty">${emptyLabel} Open the catalog to add an item or create a custom entry.</td></tr>`}</tbody></table></div></div>
   </section>`;
 }
 
@@ -988,6 +1012,7 @@ function renderSheet() {
   selectedSheetCharacterId = character.id;
   const inventory = itemsForCharacter(character);
   const effectiveAttributes = effectiveAttributesFor(character, inventory);
+  const armorCalculation = armorCalculationFor(character, inventory);
   const portrait = character.portraitUrl
     ? `<img class="sheet-portrait" src="${escapeHtml(character.portraitUrl)}" alt="${escapeHtml(character.name)} portrait">`
     : `<div class="sheet-portrait sheet-portrait-placeholder" aria-hidden="true">${escapeHtml(initials(character.name))}</div>`;
@@ -1000,20 +1025,21 @@ function renderSheet() {
     const base = attribute === "EMP"
       ? `[${character.attributes?.EMP ?? "—"}/${currentEmpathyFor(character)}]`
       : character.attributes?.[attribute] ?? "—";
-    const value = attribute === "EMP" || effectiveAttributes[attribute] === character.attributes?.[attribute]
-      ? base
-      : `${character.attributes?.[attribute] ?? "—"} → ${effectiveAttributes[attribute]}`;
+    const changed = attribute !== "EMP" && effectiveAttributes[attribute] !== character.attributes?.[attribute];
+    const value = attribute === "REF"
+      ? `[${character.attributes?.REF ?? "—"}/${effectiveAttributes.REF ?? "—"}]`
+      : changed ? `${character.attributes?.[attribute] ?? "—"} → ${effectiveAttributes[attribute]}` : base;
     return `<button class="attr-cell attr-roll-button" type="button" data-action="sheet-attribute-roll" data-character-id="${escapeHtml(character.id)}" data-attribute="${attribute}" title="Roll ${attribute}">${attribute}<strong>${escapeHtml(value)}</strong></button>`;
   }).join("");
   const humanityMaximum = startingHumanityFor(character);
   const humanityForm = `<form class="sheet-humanity-form" data-humanity-form data-character-id="${escapeHtml(character.id)}"><label><span>HUMANITY</span><input class="field-input" type="number" name="humanity" min="0" max="${humanityMaximum}" step="0.5" value="${currentHumanityFor(character)}" required aria-label="Current humanity, maximum ${humanityMaximum}"></label><span class="sheet-humanity-maximum">/ ${humanityMaximum}</span><button class="button button-quiet" type="submit">Save</button></form>`;
   const bodyRows = BODY_LOCATIONS.map(({ key, label }) => {
     const health = character.bodyHealth?.[key] || {};
-    const armorSP = character.bodyArmorSP?.[key] == null ? "—" : character.bodyArmorSP[key];
-    return `<div class="body-status-cell"><div class="body-status-cell-heading"><strong>${escapeHtml(label)}</strong><span>SP ${escapeHtml(armorSP)}</span></div><div class="body-health-values"><label><span>Current</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></label><label><span>Max</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></label></div></div>`;
+    const armorSP = armorCalculation.limbs[key].sp == null ? "—" : armorCalculation.limbs[key].sp;
+    return `<div class="body-status-cell"><div class="body-status-cell-heading"><strong>${escapeHtml(label)}</strong><span>SP ${escapeHtml(armorSP)}</span></div><div class="body-health-values"><label><span>Damage</span><input class="input-control body-health-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} limb damage"></label></div></div>`;
   }).join("");
-  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${character.isNpc ? "NPC · " : ""}${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><div class="sheet-tracking"><form class="sheet-life-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Life</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Current life"></label><span>/</span><label><span class="sr-only">Maximum life</span><input class="field-input" type="number" name="healthMax" min="0" max="9999" step="1" value="${escapeHtml(character.healthMax ?? "")}" aria-label="Maximum life"></label><button class="button button-quiet" type="submit">Save</button></form><form class="sheet-eddies-inline" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Eddies</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required aria-label="Eddies balance"></label><button class="button button-quiet" type="submit">Save</button></form></div></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
-    <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${Object.entries(effectiveAttributes).some(([attribute, value]) => attribute !== "EMP" && value !== character.attributes?.[attribute]) ? `<p class="field-hint">Installed cyberware bonuses are added to the base score; boosted values show base → effective.</p>` : ""}${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB HEALTH</p><span class="field-hint">Current / max</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb health</button></form></section>
+  target.innerHTML = `${tabs}<article class="sheet-hero">${portrait}<div class="sheet-identity"><p class="eyebrow">${character.isNpc ? "NPC · " : ""}${escapeHtml(character.role || "CHARACTER")} · ${escapeHtml(character.handle || "NO HANDLE")}</p><h2>${escapeHtml(character.name)}</h2><div class="sheet-tracking"><form class="sheet-damage-form" data-character-vitals-form data-vitals-kind="health" data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Damage</span><input class="field-input" type="number" name="healthCurrent" min="0" max="9999" step="1" value="${escapeHtml(character.healthCurrent ?? "")}" aria-label="Damage"></label><button class="button button-quiet" type="submit">Save</button></form><form class="sheet-eddies-inline" data-eddies-form data-character-id="${escapeHtml(character.id)}"><label><span class="field-label">Eddies</span><input class="field-input" type="number" name="eddies" min="0" max="999999999" step="1" value="${escapeHtml(character.eddies)}" required aria-label="Eddies balance"></label><button class="button button-quiet" type="submit">Save</button></form></div></div><div class="sheet-actions"><button class="button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit sheet</button><button class="button button-primary" type="button" data-action="open-character-board" data-id="${escapeHtml(character.id)}">▦ Play on board</button></div></article>
+    <section class="panel sheet-top-stats"><div class="sheet-attributes-wrap"><div class="sheet-stats-heading"><p class="section-kicker">ATTRIBUTES · CLICK TO ROLL</p><button class="text-button" type="button" data-action="edit-character" data-id="${escapeHtml(character.id)}">Edit</button></div><div class="card-attrs sheet-attributes">${attributes}</div>${Object.entries(effectiveAttributes).some(([attribute, value]) => attribute !== "EMP" && value !== character.attributes?.[attribute]) ? `<p class="field-hint">REF shows base/current; other modified attributes show base → effective.</p>` : ""}${armorCalculation.totalEV ? `<p class="field-hint">Armor EV penalty: −${armorCalculation.totalEV} REF (${armorCalculation.itemEV} item EV + ${armorCalculation.layerEV} layered EV).</p>` : ""}${humanityForm}</div><form class="sheet-body-vitals" data-character-vitals-form data-vitals-kind="body" data-character-id="${escapeHtml(character.id)}"><div class="sheet-stats-heading"><p class="section-kicker">LIMB DAMAGE</p><span class="field-hint">Adjust as damage changes</span></div><div class="body-status-row-wrap"><div class="body-status-row">${bodyRows}</div></div><button class="button button-quiet sheet-limb-save" type="submit">Save limb damage</button></form></section>
     ${renderDiceRoller()}<div class="sheet-main-grid">${renderSkillsPanel(character)}${renderCharacterActions(character, inventory)}${renderInventoryPanel(character, inventory)}</div>
     <section class="panel sheet-recent-actions-panel"><div class="panel-head"><h2>Recent actions</h2></div><div class="panel-body"><div id="sheet-recent-actions">${renderRecentSheetActions(character)}</div></div></section>`;
   if (character.isNpc) target.querySelector('[data-action="open-character-board"]')?.remove();
@@ -1039,9 +1065,9 @@ function roomEventText(event) {
     return `<strong>${escapeHtml(event.actor)}</strong> rolled a ${type} for <strong>${escapeHtml(event.characterName)}</strong>${escapeHtml(descriptor)}${ammunition}: ${formula}${target}`;
   }
   if (event.kind === "health") {
-    const verb = event.delta > 0 ? "gained" : "lost";
-    const current = event.current == null ? "" : ` (${escapeHtml(event.current)}${event.max > 0 ? `/${escapeHtml(event.max)}` : ""})`;
-    return `<strong>${escapeHtml(event.actor)}</strong>: <strong>${escapeHtml(event.characterName)}</strong> ${verb} ${escapeHtml(Math.abs(event.delta))} life${current}.`;
+    const verb = event.delta > 0 ? "damage increased by" : "damage reduced by";
+    const current = event.current == null ? "" : ` (${escapeHtml(event.current)})`;
+    return `<strong>${escapeHtml(event.actor)}</strong>: <strong>${escapeHtml(event.characterName)}</strong> ${verb} ${escapeHtml(Math.abs(event.delta))} damage${current}.`;
   }
   return `<strong>${escapeHtml(event.actor || "TABLE")}</strong> ${escapeHtml(event.message || "updated the table.")}`;
 }
@@ -1061,7 +1087,7 @@ function renderPalette() {
     if (boardIsGm) {
       target.innerHTML = `<p class="palette-intro">Campaign characters shared by players. Drag one onto the board or use Add.</p>${campaignRoster.map((character, index) => {
         const placed = boardState.tokens.some(token => token.characterId === character.id);
-        return `<button class="palette-card party-card" type="button" ${placed ? "disabled" : "draggable=\"true\""} data-palette-kind="character" data-palette-index="${index}" aria-label="${placed ? "Already on board: " : "Drag or add "}${escapeHtml(character.name)}"><span class="enemy-avatar">${character.portraitUrl ? `<img src="${escapeHtml(character.portraitUrl)}" alt="">` : escapeHtml(initials(character.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.ownerName || "Player")} · LIFE ${escapeHtml(character.healthCurrent ?? "—")}</small></span><span class="palette-add">${placed ? "✓" : "＋"}</span></button>`;
+        return `<button class="palette-card party-card" type="button" ${placed ? "disabled" : "draggable=\"true\""} data-palette-kind="character" data-palette-index="${index}" aria-label="${placed ? "Already on board: " : "Drag or add "}${escapeHtml(character.name)}"><span class="enemy-avatar">${character.portraitUrl ? `<img src="${escapeHtml(character.portraitUrl)}" alt="">` : escapeHtml(initials(character.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(character.name)}</strong><small>${escapeHtml(character.ownerName || "Player")} · DAMAGE ${escapeHtml(character.healthCurrent ?? "—")}</small></span><span class="palette-add">${placed ? "✓" : "＋"}</span></button>`;
       }).join("") || `<div class="board-empty-inline">No characters are linked yet. Players can share their characters from this tab.</div>`}<p class="field-hint">Only the GM can place characters. Players can move their own character tokens, and the GM can move any token.</p>`;
     } else {
       const linked = new Set(campaignRoster.map(character => character.id));
@@ -1084,7 +1110,7 @@ function renderPalette() {
     return;
   }
   target.innerHTML = enemyTemplates.length
-    ? `<p class="palette-intro">Editable, original sample adversaries. Update their details in your table as needed.</p>${enemyTemplates.map((item, index) => `<button class="palette-card enemy-card" type="button" draggable="true" data-palette-kind="enemy" data-palette-index="${index}" aria-label="Drag or add ${escapeHtml(item.name)}"><span class="enemy-avatar">${escapeHtml(initials(item.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>REF ${item.attributes.REF} · BODY ${item.attributes.BODY} · LIFE ${item.health.current}</small></span><span class="palette-add">＋</span><span class="palette-gear">${item.gear.map(escapeHtml).join(" · ")}</span></button>`).join("")}<p class="field-hint">Drag an adversary onto the grid or tap + to place it.</p>`
+    ? `<p class="palette-intro">Editable, original sample adversaries. Update their details in your table as needed.</p>${enemyTemplates.map((item, index) => `<button class="palette-card enemy-card" type="button" draggable="true" data-palette-kind="enemy" data-palette-index="${index}" aria-label="Drag or add ${escapeHtml(item.name)}"><span class="enemy-avatar">${escapeHtml(initials(item.name))}</span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>REF ${item.attributes.REF} · BODY ${item.attributes.BODY} · DAMAGE ${item.health.current}</small></span><span class="palette-add">＋</span><span class="palette-gear">${item.gear.map(escapeHtml).join(" · ")}</span></button>`).join("")}<p class="field-hint">Drag an adversary onto the grid or tap + to place it.</p>`
     : `<div class="board-empty-inline">Enemy templates are available after GM verification.</div>`;
 }
 
@@ -1099,7 +1125,7 @@ function renderInitiative() {
 }
 
 function renderBoardEvents() {
-  if (!roomEvents.length) return `<div class="board-empty-inline">Rolls, life changes, and table updates will appear here for everyone in this campaign.</div>`;
+  if (!roomEvents.length) return `<div class="board-empty-inline">Rolls, damage changes, and table updates will appear here for everyone in this campaign.</div>`;
   return `<div class="board-event-list">${roomEvents.slice(-12).reverse().map(event => `<article class="board-event"><span class="event-time">${escapeHtml(event.timestamp ? new Date(event.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "")}</span><p>${roomEventText(event)}</p></article>`).join("")}</div>`;
 }
 
@@ -1156,8 +1182,8 @@ function renderBoardSide() {
   const tokenAttributes = canInspectToken ? Object.entries(selectedToken?.attributes ?? {}).map(([attribute, value]) => `${attribute} ${value}`).join(" · ") : "";
   const tokenGear = canInspectToken && selectedToken?.gear?.length ? selectedToken.gear.join(" · ") : "No gear listed.";
   const healthPanel = selectedToken ? canInspectToken
-    ? `<div class="selected-token"><div class="selected-token-copy"><span class="card-kicker">${escapeHtml(selectedToken.kind === "enemy" ? "ENEMY" : "ON THE BOARD")}</span><strong>${escapeHtml(selectedToken.name)}</strong></div><span class="tag tag-cyan">${escapeHtml(selectedToken.health?.current ?? 0)}${selectedToken.health?.max ? `/${escapeHtml(selectedToken.health.max)}` : ""} LIFE</span></div>${tokenAttributes ? `<p class="token-stat-line">${escapeHtml(tokenAttributes)}</p>` : ""}<p class="token-gear-line"><span>GEAR</span> ${escapeHtml(tokenGear)}</p>${boardIsGm || selectedToken.ownerUserId === signedInAccount?.id ? `<div class="health-adjust-row"><label class="sr-only" for="health-adjust">Life amount</label><input id="health-adjust" class="input-control" type="number" min="1" value="1"><button class="button button-danger" type="button" data-action="adjust-health" data-delta="-1">− Damage</button><button class="button button-quiet" type="button" data-action="adjust-health" data-delta="1">＋ Heal</button></div><p class="field-hint">Life changes are manual; damage is never applied by an attack roll.</p>` : ""}`
-    : `<div class="selected-token"><div class="selected-token-copy"><span class="card-kicker">ON THE BOARD</span><strong>${escapeHtml(selectedToken.name)}</strong></div></div><p class="field-hint">Only the GM can view this unit's attributes, gear, and life.</p>`
+    ? `<div class="selected-token"><div class="selected-token-copy"><span class="card-kicker">${escapeHtml(selectedToken.kind === "enemy" ? "ENEMY" : "ON THE BOARD")}</span><strong>${escapeHtml(selectedToken.name)}</strong></div><span class="tag tag-cyan">${escapeHtml(selectedToken.health?.current ?? 0)} DAMAGE</span></div>${tokenAttributes ? `<p class="token-stat-line">${escapeHtml(tokenAttributes)}</p>` : ""}<p class="token-gear-line"><span>GEAR</span> ${escapeHtml(tokenGear)}</p>${boardIsGm || selectedToken.ownerUserId === signedInAccount?.id ? `<div class="damage-adjust-row"><label class="sr-only" for="damage-adjust">Damage amount</label><input id="damage-adjust" class="input-control" type="number" min="1" value="1"><button class="button button-danger" type="button" data-action="adjust-damage" data-delta="1">＋ Damage</button><button class="button button-quiet" type="button" data-action="adjust-damage" data-delta="-1">− Heal</button></div><p class="field-hint">Damage is adjusted manually; attacks do not change it.</p>` : ""}`
+    : `<div class="selected-token"><div class="selected-token-copy"><span class="card-kicker">ON THE BOARD</span><strong>${escapeHtml(selectedToken.name)}</strong></div></div><p class="field-hint">Only the GM can view this unit's attributes, gear, and damage.</p>`
     : `<div class="board-empty-inline">Select a board token to view its details.</div>`;
   target.innerHTML = `<section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">TURN ORDER</p><h2>Initiative</h2></div>${renderInitiative()}</section>
     <section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">${boardIsGm ? "GM ROLLS" : "CHARACTER ROLLS"}</p><h2>${boardIsGm ? "Skill / attack check" : "Roll from your sheet"}</h2></div>${boardIsGm && character ? `<form class="board-roll-form" id="board-roll-form">
@@ -1168,7 +1194,7 @@ function renderBoardSide() {
       <p class="roll-formula">1d10 + attribute + skill + modifier vs target. Damage is entered separately.</p>
       <div class="roll-buttons"><button class="button button-primary" type="button" data-action="roll" data-roll-kind="skill">Roll skill</button><button class="button" type="button" data-action="roll" data-roll-kind="attack">Roll attack</button></div>
     </form>` : boardIsGm ? `<div class="board-empty-inline">Create a character before rolling from the board.</div>` : `<div class="board-empty-inline">Players roll from their own character sheet. Linked character rolls appear in this campaign feed.</div>`}</section>
-    <section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">LIFE TRACKER</p><h2>Health change</h2></div>${healthPanel}</section>
+    <section class="board-side-panel"><div class="board-side-heading"><p class="section-kicker">DAMAGE TRACKER</p><h2>Adjust damage</h2></div>${healthPanel}</section>
     <section class="board-side-panel board-activity-panel"><div class="board-side-heading"><p class="section-kicker">LIVE CAMPAIGN FEED</p><h2>Table activity</h2></div>${renderBoardEvents()}</section>`;
 }
 
@@ -1210,8 +1236,8 @@ function renderBoard() {
     const ownCharacter = piece.renderKind === "token" && piece.kind === "character" && piece.ownerUserId === signedInAccount?.id;
     const canSeeStats = boardIsGm || ownCharacter;
     const canMove = boardIsGm || ownCharacter;
-    const life = canSeeStats ? `<span class="piece-life">${escapeHtml(piece.health?.current ?? 0)}${piece.health?.max ? `/${escapeHtml(piece.health.max)}` : ""}</span>` : "";
-    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * 2} by ${piece.height * 2} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `${piece.portraitUrl ? `<img class="piece-portrait" src="${escapeHtml(piece.portraitUrl)}" alt="">` : `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span>`}<span class="piece-label">${escapeHtml(piece.name)}</span>${life}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
+    const damage = canSeeStats ? `<span class="piece-damage">${escapeHtml(piece.health?.current ?? 0)}</span>` : "";
+    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * 2} by ${piece.height * 2} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `${piece.portraitUrl ? `<img class="piece-portrait" src="${escapeHtml(piece.portraitUrl)}" alt="">` : `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span>`}<span class="piece-label">${escapeHtml(piece.name)}</span>${damage}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
   }).join("");
   renderBoardSide();
 }
@@ -1246,7 +1272,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
       id: makeId(), kind: "character", name: character.name, role: character.role || "Character",
       x: Math.min(position.x, BOARD_COLUMNS - 1), y: Math.min(position.y, BOARD_ROWS - 1),
       width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
-      health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 },
+      health: { current: character.healthCurrent ?? 0 },
       initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId, portraitUrl: character.portraitUrl || ""
     };
     boardState.tokens.push(token);
@@ -1269,7 +1295,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
       width, height, attributes: effectiveAttributesFor(npc, itemsForCharacter(npc)),
       skills: (npc.skills || []).map(normalizeSkill),
       gear: [...new Set([...(npc.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === npc.id).map(item => item.name)])],
-      health: { current: npc.healthCurrent ?? 0, max: npc.healthMax ?? 0 },
+      health: { current: npc.healthCurrent ?? 0 },
       initiative: 0, characterId: "", portraitUrl: npc.portraitUrl || ""
     };
     boardState.tokens.push(token);
@@ -1324,7 +1350,7 @@ function addCharacterToken(characterId) {
     x: Math.min(boardState.tokens.length % BOARD_COLUMNS, BOARD_COLUMNS - 1),
     y: Math.min(Math.floor(boardState.tokens.length / BOARD_COLUMNS) % BOARD_ROWS, BOARD_ROWS - 1),
     width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)],
-    health: { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || "", portraitUrl: character.portraitUrl || ""
+    health: { current: character.healthCurrent ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || "", portraitUrl: character.portraitUrl || ""
   };
   boardState.tokens.push(token);
   selectedBoardTokenId = token.id;
@@ -1373,7 +1399,7 @@ function setInitiative(tokenId, value) {
 
 function sendRoomEvent(event) {
   if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || connectionStatus !== "LIVE") {
-    showToast("Connect to the campaign room before rolling or changing life.", true);
+    showToast("Connect to the campaign room before rolling or changing damage.", true);
     return false;
   }
   activeSocket.send(JSON.stringify({ type: "event", event }));
@@ -1568,25 +1594,24 @@ function performRoll(rollKind) {
   showToast(`${rollKind === "attack" ? "Attack" : "Skill"} roll sent to the campaign.`);
 }
 
-function adjustSelectedHealth(deltaSign) {
+function adjustSelectedDamage(deltaSign) {
   const token = boardState.tokens.find(item => item.id === selectedBoardTokenId);
   const canAdjust = boardIsGm || (token?.kind === "character" && token.ownerUserId === signedInAccount?.id);
-  if (!canAdjust) return showToast("Only the GM or the character's owner can change this unit's life.", true);
+  if (!canAdjust) return showToast("Only the GM or the character's owner can change this unit's damage.", true);
   if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || connectionStatus !== "LIVE") {
-    return showToast("Connect to the campaign room before changing life.", true);
+    return showToast("Connect to the campaign room before changing damage.", true);
   }
-  const amount = Math.max(1, Math.min(9999, Number(document.getElementById("health-adjust")?.value || 1)));
-  if (!token || !Number.isFinite(amount)) return showToast("Select a board token and a valid life amount.", true);
+  const amount = Math.max(1, Math.min(9999, Number(document.getElementById("damage-adjust")?.value || 1)));
+  if (!token || !Number.isFinite(amount)) return showToast("Select a board token and a valid damage amount.", true);
   const delta = Math.trunc(amount) * deltaSign;
-  const maximum = Number(token.health?.max || 0);
   const previous = Number(token.health?.current || 0);
-  const current = maximum > 0 ? Math.max(0, Math.min(maximum, previous + delta)) : Math.max(0, previous + delta);
+  const current = Math.max(0, Math.min(9999, previous + delta));
   const actualDelta = current - previous;
-  if (!actualDelta) return showToast("No life change to apply.", true);
-  token.health = { current, max: maximum };
-  sendRoomEvent({ kind: "health", characterId: token.characterId || token.id, characterName: token.name, delta: actualDelta, current, max: maximum });
+  if (!actualDelta) return showToast("No damage change to apply.", true);
+  token.health = { current };
+  sendRoomEvent({ kind: "health", characterId: token.characterId || token.id, characterName: token.name, delta: actualDelta, current });
   renderBoard();
-  showToast(`${token.name} ${actualDelta > 0 ? "gained" : "lost"} ${Math.abs(actualDelta)} life.`);
+  showToast(`${token.name}'s damage ${actualDelta > 0 ? "increased" : "decreased"} by ${Math.abs(actualDelta)}.`);
 }
 
 async function copyRoomCode(campaignId) {
@@ -1743,7 +1768,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
       if (item.kind === "health" && item.characterId) {
         const character = selectedCharacter(item.characterId);
         if (character && item.ownerUserId === signedInAccount?.id && item.current != null) {
-          void saveCharacterHealth(character, item.current);
+          void saveCharacterDamage(character, item.current);
           return;
         }
       }
@@ -1935,9 +1960,59 @@ function bodyStatusFields(character) {
   const rows = BODY_LOCATIONS.map(({ key, label }) => {
     const health = character?.bodyHealth?.[key] || {};
     const armorSP = character?.bodyArmorSP?.[key] ?? "";
-    return `<div class="body-status-edit-row"><strong>${escapeHtml(label)}</strong><label><span>Current</span><input class="field-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} current limb health"></label><label><span>Max</span><input class="field-input" type="number" min="0" max="9999" step="1" name="body-${key}-max" value="${escapeHtml(health.max ?? "")}" aria-label="${escapeHtml(label)} maximum limb health"></label><label><span>Armor SP</span><input class="field-input" type="number" min="0" max="9999" step="1" name="armor-${key}-sp" value="${escapeHtml(armorSP)}" aria-label="${escapeHtml(label)} armor SP"></label></div>`;
+    return `<div class="body-status-edit-row"><strong>${escapeHtml(label)}</strong><label><span>Damage</span><input class="field-input" type="number" min="0" max="9999" step="1" name="body-${key}-current" value="${escapeHtml(health.current ?? "")}" aria-label="${escapeHtml(label)} limb damage"></label><label><span>Armor SP</span><input class="field-input" type="number" min="0" max="9999" step="1" name="armor-${key}-sp" value="${escapeHtml(armorSP)}" aria-label="${escapeHtml(label)} armor SP"></label></div>`;
   }).join("");
-  return `<section class="form-field full body-status-fields"><div><span class="field-label">Limb health and body armor</span><span class="field-hint">Manual values only. Armor and damage rules can be added later.</span></div><div class="body-status-edit-grid">${rows}</div></section>`;
+  return `<section class="form-field full body-status-fields"><div><span class="field-label">Limb damage and manual armor SP</span><span class="field-hint">Manual SP remains as a fallback for limbs without equipped armor items. Set SP, EV, coverage, and clothing layer level on armor items; cyberware armor is fixed at layer 1.</span></div><div class="body-status-edit-grid">${rows}</div></section>`;
+}
+
+function armorProtectionFields(item) {
+  const armorTypes = [
+    { value: "standard", label: "Standard armor" },
+    { value: "subdermal", label: "Subdermal armor" },
+    { value: "skinweave", label: "Skin Weave" }
+  ];
+  const armorClasses = [
+    { value: "light", label: "Light armor" },
+    { value: "heavy", label: "Heavy armor" }
+  ];
+  const layerOrders = [
+    { value: "1", label: "Innermost" },
+    { value: "2", label: "Middle" },
+    { value: "3", label: "Outermost" }
+  ];
+  const selectedLocations = new Set(item?.armorLocations || []);
+  const locationOptions = BODY_LOCATIONS.map(({ key, label }) =>
+    `<label class="chip-socket-toggle"><input type="checkbox" name="armorLocation" value="${key}" ${selectedLocations.has(key) ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`
+  ).join("");
+  return `<section class="form-field full armor-protection-fields" data-armor-fields hidden>
+    <span class="field-label">Armor calculation</span>
+    <span class="field-hint">Choose light or heavy armor for clothing, enter EV and SP, and select covered limbs. Cyberware armor is fixed at layer 1. Skin Weave is layer 0 and contributes SP as layer 1 without adding a worn layer.</span>
+    <div data-armor-class>${selectField("Clothing armor class", "armorClass", armorClasses, item?.armorClass ?? "", true)}</div>
+    <div data-armor-layer-type>${selectField("Cyberware armor type", "armorLayerType", armorTypes, item?.armorLayerType ?? "standard")}</div>
+    <div class="form-grid">${field("Armor SP", "armorSP", item?.armorSP ?? "", { type: "number", min: 0, max: 9999, step: 1 })}
+      ${field("EV value", "armorEV", item?.armorEV ?? "", { type: "number", min: 0, max: 99, step: 1 })}
+      <div data-armor-layer-order>${selectField("Layer level", "armorLayerOrder", layerOrders, String(item?.armorLayerOrder ?? 1))}</div>
+    </div>
+    <div class="armor-location-options"><span class="field-label">Covered limb areas</span><div class="form-grid">${locationOptions}</div></div>
+  </section>`;
+}
+
+function armorPropertiesFromForm(data) {
+  const armorSP = data.has("armorSP") ? readOptionalFormInteger(data, "armorSP", 9999) : null;
+  const armorEV = data.has("armorEV") ? readOptionalFormInteger(data, "armorEV", 99) : null;
+  const category = String(data.get("category") || "").toLowerCase();
+  const armorLayerType = String(data.get("armorLayerType") || "standard");
+  const requestedLayerOrder = data.has("armorLayerOrder") ? readOptionalFormInteger(data, "armorLayerOrder", 3) : null;
+  if (armorSP === undefined || armorEV === undefined || requestedLayerOrder === undefined) return null;
+  const armor = {
+    armorSP,
+    armorEV,
+    armorLocations: data.getAll("armorLocation").map(String),
+    armorLayerType,
+    armorClass: data.has("armorClass") && data.get("armorClass") ? String(data.get("armorClass")) : null,
+    armorLayerOrder: armorLayerType === "skinweave" ? 0 : category === "cyberware" ? 1 : requestedLayerOrder || 1
+  };
+  return validArmorItem(armor) ? armor : null;
 }
 
 function formShell(title, subtitle, formName, body, submitLabel = "Save changes") {
@@ -2033,7 +2108,7 @@ function initialSkillGeneration(form) {
     value: Number(form.elements.specialSkillPoints.value),
     special: true
   });
-  if (skills.some(skill => !Number.isInteger(skill.value) || skill.value < 1 || skill.value > 40)
+  if (skills.some(skill => !Number.isInteger(skill.value) || skill.value < 1 || skill.value > 10)
     || skills.reduce((sum, skill) => sum + skill.value, 0) !== 40) return null;
   return {
     skills,
@@ -2056,23 +2131,26 @@ function updateSkillAllocation(form) {
   specialPoints.disabled = !specialName;
   const allocatedValues = selectedRows.map(row => Number(row.querySelector('[name="normalSkillPoints"]').value));
   if (specialName) allocatedValues.push(Number(specialPoints.value));
-  const invalidPoints = allocatedValues.some(value => !Number.isInteger(value) || value < 1 || value > 40);
+  const invalidPoints = allocatedValues.some(value => !Number.isInteger(value) || value < 1 || value > 10);
   const allocated = allocatedValues.reduce((sum, value) => sum + (Number.isInteger(value) ? value : 0), 0);
   const complete = selectedRows.length === 9 && Boolean(specialName) && !invalidPoints && allocated === 40;
   const status = form.querySelector("#skill-points-status");
   if (!status) return;
-  status.textContent = `Normal skills: ${selectedRows.length} / 9. Special skill: ${specialName ? "selected" : "not selected"}. Points: ${allocated} / 40${invalidPoints ? " (each selected skill needs at least 1 whole point)" : ""}${allocated > 40 ? ` (${allocated - 40} over)` : ""}.`;
+  status.textContent = `Normal skills: ${selectedRows.length} / 9. Special skill: ${specialName ? "selected" : "not selected"}. Points: ${allocated} / 40${invalidPoints ? " (each selected skill needs 1–10 whole points)" : ""}${allocated > 40 ? ` (${allocated - 40} over)` : ""}.`;
   status.classList.toggle("is-complete", complete);
   status.classList.toggle("is-over", invalidPoints || allocated > 40);
 }
 
-function editorSkillRow(skill, index, selected = false) {
+function editorSkillRow(skill, index, selected = false, min = -100, max = 100) {
   const id = `edit-skill-${index}`;
   const points = Number.isInteger(Number(skill.value)) ? Number(skill.value) : 0;
-  return `<div class="skill-picker-row edit-skill-row"><label for="${id}"><input id="${id}" type="checkbox" name="editSkill" value="${escapeHtml(skill.name)}" data-special="${Boolean(skill.special)}" ${selected ? "checked" : ""}><span>${escapeHtml(skill.name)}</span></label><input class="skill-point-input" type="number" name="editSkillPoints" min="-100" max="100" step="1" value="${points}" ${selected ? "" : "disabled"} aria-label="Points for ${escapeHtml(skill.name)}"></div>`;
+  return `<div class="skill-picker-row edit-skill-row"><label for="${id}"><input id="${id}" type="checkbox" name="editSkill" value="${escapeHtml(skill.name)}" data-special="${Boolean(skill.special)}" ${selected ? "checked" : ""}><span>${escapeHtml(skill.name)}</span></label><input class="skill-point-input" type="number" name="editSkillPoints" min="${min}" max="${max}" step="1" value="${points}" ${selected ? "" : "disabled"} aria-label="Points for ${escapeHtml(skill.name)}"></div>`;
 }
 
 function characterSkillPicker(character) {
+  const isNewCharacter = !character?.id;
+  const skillMinimum = isNewCharacter ? 0 : -100;
+  const skillMaximum = isNewCharacter ? 10 : 100;
   const existingSkills = (character.skills || []).map(normalizeSkill).filter(skill => skill.name);
   const existingByName = new Map(existingSkills.map(skill => [skill.name.toLowerCase(), skill]));
   const normalNames = new Set(NORMAL_SKILL_GROUPS.flatMap(group => group.skills.map(skill => skill.toLowerCase())));
@@ -2100,10 +2178,13 @@ function characterSkillPicker(character) {
   ];
   let skillIndex = 0;
   const tabs = groups.map((group, index) => `<button id="edit-skill-tab-${index}" class="inventory-tab ${index === 0 ? "active" : ""}" type="button" role="tab" aria-selected="${index === 0}" aria-controls="edit-skill-panel-${index}" data-edit-skill-tab="${index}" data-skill-editor-category="${group.key}">${escapeHtml(group.label)} <span>${group.skills.length}</span></button>`).join("");
+  const skillRangeHint = isNewCharacter
+    ? "New character skill ratings must be whole numbers from 0 to 10."
+    : "There is no total-points limit; skill ratings must be whole numbers from -100 to 100.";
   const panels = groups.map((group, index) => {
     const rows = group.skills.map(skill => {
       const current = existingByName.get(skill.name.toLowerCase());
-      const row = editorSkillRow({ ...skill, value: current?.value ?? 0 }, skillIndex++, Boolean(current));
+      const row = editorSkillRow({ ...skill, value: current?.value ?? 0 }, skillIndex++, Boolean(current), skillMinimum, skillMaximum);
       return row;
     }).join("");
     const addCustomSkill = group.key === "OTHER"
@@ -2111,10 +2192,13 @@ function characterSkillPicker(character) {
       : "";
     return `<section class="skill-picker-group edit-skill-panel" id="edit-skill-panel-${index}" data-skill-editor-panel="${group.key}" role="tabpanel" aria-labelledby="edit-skill-tab-${index}" ${index === 0 ? "" : "hidden"}><h4>${escapeHtml(group.label)}</h4>${rows || `<p class="field-hint">No skills in this category.</p>`}${addCustomSkill}</section>`;
   }).join("");
-  return `<section class="form-field full skill-creation-fields character-skill-editor"><div><span class="field-label">Skills</span><span class="field-hint">Select the character's skills and set each rating. There is no total-points limit; skill ratings must be whole numbers from -100 to 100. Add table-specific skills under Other.</span></div><div class="skill-editor-picker"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${tabs}</div><div class="skill-picker-list">${panels}</div></div></section>`;
+  return `<section class="form-field full skill-creation-fields character-skill-editor"><div><span class="field-label">Skills</span><span class="field-hint">Select the character's skills and set each rating. ${skillRangeHint} Add table-specific skills under Other.</span></div><div class="skill-editor-picker"><div class="inventory-tabs sheet-skill-tabs" role="tablist" aria-label="Skill categories">${tabs}</div><div class="skill-picker-list">${panels}</div></div></section>`;
 }
 
 function editedSkillsFromForm(form) {
+  const isNewNpc = !form.dataset.id && form.dataset.isNpc === "true";
+  const minimum = isNewNpc ? 0 : -100;
+  const maximum = isNewNpc ? 10 : 100;
   const rows = [...form.querySelectorAll(".edit-skill-row")].filter(row => row.querySelector('[name="editSkill"]').checked);
   if (rows.length > 100) {
     showToast("A character can have up to 100 skills.", true);
@@ -2126,8 +2210,8 @@ function editedSkillsFromForm(form) {
     const checkbox = row.querySelector('[name="editSkill"]');
     const name = checkbox.value.trim();
     const value = Number(row.querySelector('[name="editSkillPoints"]').value);
-    if (!name || !Number.isInteger(value) || value < -100 || value > 100) {
-      showToast("Selected skill ratings must be whole numbers from -100 to 100.", true);
+    if (!name || !Number.isInteger(value) || value < minimum || value > maximum) {
+      showToast(`Selected skill ratings must be whole numbers from ${minimum} to ${maximum}.`, true);
       row.querySelector('[name="editSkillPoints"]').focus();
       return null;
     }
@@ -2156,7 +2240,14 @@ function addEditorSkill(button) {
   const addControl = otherPanel?.querySelector(".skill-editor-add");
   if (!otherPanel || !addControl) return showToast("Could not add the custom skill.", true);
   const row = document.createElement("div");
-  row.innerHTML = editorSkillRow({ name, value: 1, special: false }, form.querySelectorAll(".edit-skill-row").length, true);
+  const isNewNpc = !form.dataset.id && form.dataset.isNpc === "true";
+  row.innerHTML = editorSkillRow(
+    { name, value: 1, special: false },
+    form.querySelectorAll(".edit-skill-row").length,
+    true,
+    isNewNpc ? 0 : -100,
+    isNewNpc ? 10 : 100
+  );
   const skillRow = row.firstElementChild;
   otherPanel.insertBefore(skillRow, addControl);
   const otherTab = form.querySelector('[data-skill-editor-category="OTHER"]');
@@ -2169,9 +2260,9 @@ function addEditorSkill(button) {
 function startingSkillPicker() {
   const groups = NORMAL_SKILL_GROUPS.map((group, groupIndex) => `<section class="skill-picker-group"><h4>${escapeHtml(group.attribute)}</h4>${group.skills.map((skill, skillIndex) => {
     const id = `normal-skill-${groupIndex}-${skillIndex}`;
-    return `<div class="skill-picker-row"><label for="${id}"><input id="${id}" type="checkbox" name="normalSkill" value="${escapeHtml(skill)}"><span>${escapeHtml(skill)}</span></label><input class="skill-point-input" type="number" name="normalSkillPoints" min="1" max="40" step="1" value="1" disabled aria-label="Points for ${escapeHtml(skill)}"></div>`;
+    return `<div class="skill-picker-row"><label for="${id}"><input id="${id}" type="checkbox" name="normalSkill" value="${escapeHtml(skill)}"><span>${escapeHtml(skill)}</span></label><input class="skill-point-input" type="number" name="normalSkillPoints" min="1" max="10" step="1" value="1" disabled aria-label="Points for ${escapeHtml(skill)}"></div>`;
   }).join("")}</section>`).join("");
-  return `<section class="form-field full skill-creation-fields"><div><span class="field-label">Starting skills</span><span class="field-hint">Choose 9 normal skills and 1 special skill. Assign at least 1 point to each and spend exactly 40 points. This selection limit applies only to initial character creation; add more skills later by editing the character.</span></div><div class="skill-creation-grid"><section class="skill-picker-panel"><h3>Normal skills <span>Choose 9</span></h3><div class="skill-picker-list">${groups}</div></section><section class="skill-picker-panel special-skill-panel"><h3>Special skill <span>Choose 1</span></h3><label class="form-field"><span class="field-label">Special ability</span><select class="field-select" name="specialSkill"><option value="">Choose one</option>${SPECIAL_SKILLS.map(skill => `<option value="${escapeHtml(skill)}">${escapeHtml(skill)}</option>`).join("")}</select></label><label class="form-field"><span class="field-label">Points</span><input class="field-input skill-point-input" type="number" name="specialSkillPoints" min="1" max="40" step="1" value="1" disabled></label></section></div><div class="skill-points-status" id="skill-points-status" aria-live="polite">Normal skills: 0 / 9. Special skill: not selected. Points: 0 / 40.</div></section>`;
+  return `<section class="form-field full skill-creation-fields"><div><span class="field-label">Starting skills</span><span class="field-hint">Choose 9 normal skills and 1 special skill. Assign 1–10 points to each and spend exactly 40 points. This selection limit applies only to initial character creation; add more skills later by editing the character.</span></div><div class="skill-creation-grid"><section class="skill-picker-panel"><h3>Normal skills <span>Choose 9</span></h3><div class="skill-picker-list">${groups}</div></section><section class="skill-picker-panel special-skill-panel"><h3>Special skill <span>Choose 1</span></h3><label class="form-field"><span class="field-label">Special ability</span><select class="field-select" name="specialSkill"><option value="">Choose one</option>${SPECIAL_SKILLS.map(skill => `<option value="${escapeHtml(skill)}">${escapeHtml(skill)}</option>`).join("")}</select></label><label class="form-field"><span class="field-label">Points</span><input class="field-input skill-point-input" type="number" name="specialSkillPoints" min="1" max="10" step="1" value="1" disabled></label></section></div><div class="skill-points-status" id="skill-points-status" aria-live="polite">Normal skills: 0 / 9. Special skill: not selected. Points: 0 / 40.</div></section>`;
 }
 
 function openCharacterForm(character, npcMode = Boolean(character?.isNpc)) {
@@ -2196,8 +2287,7 @@ function openCharacterForm(character, npcMode = Boolean(character?.isNpc)) {
     ${field("Handle / callsign", "handle", formCharacter?.handle ?? "")}${attributeCreation}<div class="form-field full"><span class="field-label">Attributes</span><div class="attributes-form">${attrs}</div></div>${boardFootprintFields}
     ${skillFields}
     ${bodyStatusFields(formCharacter)}
-    ${field("Current life", "healthCurrent", formCharacter?.healthCurrent ?? "", { type: "number", min: 0 })}
-    ${field("Maximum life", "healthMax", formCharacter?.healthMax ?? "", { type: "number", min: 0, hint: "Leave blank if your table does not track a maximum." })}
+    ${field("Damage", "healthCurrent", formCharacter?.healthCurrent ?? 0, { type: "number", min: 0, max: 9999, step: 1 })}
     <label class="form-field full"><span class="field-label">Portrait</span><input class="field-input" type="file" name="portrait" accept="image/jpeg,image/png,image/webp"><span class="field-hint">Optional JPEG, PNG, or WebP image up to 2 MB. Stored on this app server.</span></label>
     ${field("History", "history", formCharacter?.history ?? "", { full: true, textarea: true })}
     ${field("Notes", "notes", formCharacter?.notes ?? "", { full: true, textarea: true })}`;
@@ -2235,7 +2325,7 @@ function openCampaignForm(campaign) {
 }
 
 function openGearForm(item, characterId = "") {
-  const categories = ["Cyberware", "Style", "Weapon", "Armor", "Equipment", "Ammunition", "Other"].map(category => ({ value: category, label: category }));
+  const categories = ["Cyberware", "Clothing", "Style", "Weapon", "Armor", "Equipment", "Ammunition", "Other"].map(category => ({ value: category, label: category }));
   const owners = workspace.characters.map(character => ({ value: character.id, label: character.name }));
   const isEditing = Boolean(item?.id);
   const body = `${field("Item name", "name", item?.name ?? "", { required: true })}${selectField("Category", "category", categories, item?.category ?? "Equipment")}
@@ -2246,6 +2336,7 @@ function openGearForm(item, characterId = "") {
       ${field("Weapon stats", "weaponStats", item?.weaponStats ?? "", { full: true, textarea: true, hint: "Optional table-entered stats, kept as custom data." })}</div>
     </section>
     ${cyberwareWeaponProfileFields(item, cyberwareAmmoTypes())}
+    ${armorProtectionFields(item)}
     <input type="hidden" name="legacyWeaponType" value="${escapeHtml(item?.weaponType ?? "")}">
     <input type="hidden" name="legacyWeaponStats" value="${escapeHtml(item?.weaponStats ?? "")}">
     <input type="hidden" name="legacyAmmoType" value="${escapeHtml(item?.ammoType ?? "")}">
@@ -2269,7 +2360,8 @@ function openGearForm(item, characterId = "") {
 
 function openAuthForm(mode = "login") {
   const isRegister = mode === "register";
-  const body = `${field("Username", "username", "", { required: isRegister, hint: "3–24 letters, numbers, or underscores." })}<label class="form-field"><span class="field-label">Password</span><input class="field-input" type="password" name="password" ${isRegister ? 'minlength="12" required' : ""} maxlength="200" autocomplete="${isRegister ? "new-password" : "current-password"}"><span class="field-hint">${isRegister ? "At least 12 characters." : "Enter your account password."}</span></label><div class="form-field full auth-switch"><span>${isRegister ? "Already have an account?" : "New to Afterdark?"}</span><button class="text-button" type="button" data-action="switch-auth-mode" data-mode="${isRegister ? "login" : "register"}">${isRegister ? "Sign in" : "Create account"}</button></div>`;
+  const passwordFields = `<label class="form-field"><span class="field-label">Password</span><input class="field-input" type="password" name="password" ${isRegister ? 'minlength="12"' : ""} maxlength="200" required autocomplete="${isRegister ? "new-password" : "current-password"}"><span class="field-hint">${isRegister ? "At least 12 characters." : "Enter your account password."}</span></label>${isRegister ? `<label class="form-field"><span class="field-label">Confirm password</span><input class="field-input" type="password" name="passwordConfirmation" minlength="12" maxlength="200" required autocomplete="new-password"></label>` : ""}<label class="chip-socket-toggle form-field full"><input type="checkbox" name="showPassword"><span>Show password</span></label>`;
+  const body = `${field("Username", "username", "", { required: true, hint: "3–24 letters, numbers, or underscores." })}${passwordFields}<div class="form-field full auth-switch"><span>${isRegister ? "Already have an account?" : "New to Afterdark?"}</span><button class="text-button" type="button" data-action="switch-auth-mode" data-mode="${isRegister ? "login" : "register"}">${isRegister ? "Sign in" : "Create account"}</button></div>`;
   dialogContent.innerHTML = formShell(isRegister ? "Create your account" : "Sign in", "Your characters and portrait uploads follow your account.", "auth-form", body, isRegister ? "Create account" : "Sign in");
   dialogContent.querySelector("form").dataset.mode = mode;
   dialog.showModal();
@@ -2277,7 +2369,7 @@ function openAuthForm(mode = "login") {
 }
 
 function openCatalogItemForm(item) {
-  const categories = ["Weapon", "Ammo", "Cyberware", "Gear", "Style", "Other"].map(value => ({ value, label: value }));
+  const categories = ["Weapon", "Ammo", "Cyberware", "Clothing", "Armor", "Gear", "Style", "Other"].map(value => ({ value, label: value }));
   const weaponTypes = WEAPON_TYPE_OPTIONS.map(value => ({ value, label: value }));
   const concealabilityOptions = WEAPON_CONCEALABILITY_OPTIONS.map(value => ({
     value,
@@ -2306,6 +2398,7 @@ function openCatalogItemForm(item) {
     ${selectField("Category", "category", categories, item?.category ?? "Other")}
     ${weaponFields}
     ${cyberwareWeaponProfileFields(item, ammoTypes)}
+    ${armorProtectionFields(item)}
     ${field("Description", "description", item?.description ?? "", { full: true, textarea: true })}
     ${field("Weight", "weight", item?.weight ?? "")}${field("Cost", "cost", item?.cost ?? "")}
     <section class="form-field full nonweapon-catalog-fields" data-nonweapon-catalog-fields>
@@ -2365,8 +2458,9 @@ function cyberwareWeaponProfileFields(item, ammoTypes) {
 
 function updateCatalogWeaponFields(form) {
   if (!form) return;
-  const isWeapon = String(form.elements.category.value).toLowerCase() === "weapon";
-  const isCyberware = String(form.elements.category.value).toLowerCase() === "cyberware";
+  const category = String(form.elements.category.value).toLowerCase();
+  const isWeapon = category === "weapon";
+  const isCyberware = category === "cyberware";
   const weaponFields = form.querySelector("[data-catalog-weapon-fields]");
   const nonweaponFields = form.querySelector("[data-nonweapon-catalog-fields]");
   const legacyWeaponFields = form.querySelector("[data-legacy-weapon-fields]");
@@ -2389,11 +2483,13 @@ function updateCatalogWeaponFields(form) {
     if (form.elements.weaponType.value === "Melee") ammoField.value = "";
   }
   updateCyberwareWeaponFields(form, isCyberware);
+  updateArmorFields(form);
 }
 
 function updateGearItemFields(form) {
   if (!form) return;
-  const isCyberware = String(form.elements.category.value).toLowerCase() === "cyberware";
+  const category = String(form.elements.category.value).toLowerCase();
+  const isCyberware = category === "cyberware";
   const legacyFields = form.querySelector("[data-legacy-weapon-fields]");
   legacyFields.hidden = isCyberware;
   legacyFields.querySelectorAll("input, select, textarea").forEach(control => {
@@ -2401,6 +2497,41 @@ function updateGearItemFields(form) {
   });
   updateCyberwareAttributeFields(form, isCyberware);
   updateCyberwareWeaponFields(form, isCyberware);
+  updateArmorFields(form);
+}
+
+function updateArmorFields(form) {
+  const section = form.querySelector("[data-armor-fields]");
+  if (!section) return;
+  const category = String(form.elements.category.value).toLowerCase();
+  const isCyberware = category === "cyberware";
+  const isClothing = ["armor", "clothing", "style"].includes(category);
+  const isArmorOrCyberware = isCyberware || isClothing;
+  section.hidden = !isArmorOrCyberware;
+  section.querySelectorAll("input, select").forEach(control => {
+    control.disabled = !isArmorOrCyberware;
+  });
+  const armorClass = section.querySelector("[data-armor-class]");
+  if (armorClass) {
+    armorClass.hidden = !isClothing;
+    armorClass.querySelectorAll("input, select").forEach(control => {
+      control.disabled = !isClothing;
+    });
+  }
+  const armorLayerType = section.querySelector("[data-armor-layer-type]");
+  if (armorLayerType) {
+    armorLayerType.hidden = !isCyberware;
+    armorLayerType.querySelectorAll("input, select").forEach(control => {
+      control.disabled = !isCyberware;
+    });
+  }
+  const layerOrder = section.querySelector("[data-armor-layer-order]");
+  if (layerOrder) {
+    layerOrder.hidden = isCyberware || form.elements.armorLayerType?.value === "skinweave";
+    layerOrder.querySelectorAll("input, select").forEach(control => {
+      control.disabled = !isClothing || form.elements.armorLayerType?.value === "skinweave";
+    });
+  }
 }
 
 function updateCyberwareAttributeFields(form, isCyberware) {
@@ -2483,6 +2614,11 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
     showToast("Sign in to save characters to your account.", true);
     return false;
   }
+  const armorError = armorLoadoutError(itemsForCharacter(character));
+  if (armorError) {
+    showToast(armorError, true);
+    return false;
+  }
   let portraitUploadError = "";
   try {
     const response = await apiRequest(previous ? `/api/characters/${encodeURIComponent(character.id)}` : "/api/characters", {
@@ -2515,7 +2651,7 @@ async function saveCharacterToAccount(character, previous, form, showSavedMessag
     addActivity(previous ? `${savedCharacter.name}'s sheet was updated` : `${savedCharacter.name} was added`, previous ? `${noun} updated` : `${noun} added`);
     const locallySaved = saveWorkspace();
     if (!locallySaved) renderAll();
-    if (previous) recordCharacterHealthChange(previous, savedCharacter);
+    if (previous) recordCharacterDamageChange(previous, savedCharacter);
     updateAccountControls();
     if (showSavedMessage) {
       showToast(portraitUploadError
@@ -2579,18 +2715,6 @@ async function saveCharacterHumanity(form) {
 
 async function persistCharacterVitals(character, changes, showSavedMessage = false) {
   const updatedCharacter = normalizeCharacter({ ...character, ...changes });
-  if (updatedCharacter.healthCurrent != null && updatedCharacter.healthMax != null
-    && updatedCharacter.healthCurrent > updatedCharacter.healthMax) {
-    showToast("Current life cannot exceed maximum life.", true);
-    return false;
-  }
-  if (BODY_LOCATIONS.some(({ key }) => {
-    const health = updatedCharacter.bodyHealth[key];
-    return health.current != null && health.max != null && health.current > health.max;
-  })) {
-    showToast("Current limb health cannot exceed its maximum.", true);
-    return false;
-  }
   try {
     let savedCharacter = updatedCharacter;
     if (signedInAccount) {
@@ -2604,49 +2728,46 @@ async function persistCharacterVitals(character, changes, showSavedMessage = fal
     if (signedInAccount) signedInAccount.characters = workspace.characters;
     workspace.demo = false;
     if (!saveWorkspace()) return false;
-    recordCharacterHealthChange(character, savedCharacter);
-    if (showSavedMessage) showToast("Character health saved.");
+    recordCharacterDamageChange(character, savedCharacter);
+    if (showSavedMessage) showToast("Character damage saved.");
     return true;
   } catch (error) {
-    console.error("Could not save character health and limb status.", error);
-    showToast(error.message || "Could not save character health and limb status.", true);
+    console.error("Could not save character damage and limb status.", error);
+    showToast(error.message || "Could not save character damage and limb status.", true);
     return false;
   }
 }
 
 async function saveSheetVitals(form) {
   const character = selectedCharacter(form.dataset.characterId);
-  if (!character) return showToast("Choose a character before updating health.", true);
+  if (!character) return showToast("Choose a character before updating damage.", true);
   const data = new FormData(form);
   const kind = form.dataset.vitalsKind;
   const changes = {};
   if (kind === "health") {
     const healthCurrent = readOptionalFormInteger(data, "healthCurrent", 9999);
-    const healthMax = readOptionalFormInteger(data, "healthMax", 9999);
-    if (healthCurrent === undefined || healthMax === undefined) {
-      showToast("Life values must be whole numbers from 0 to 9,999.", true);
+    if (healthCurrent === undefined) {
+      showToast("Damage must be a whole number from 0 to 9,999.", true);
       return;
     }
     changes.healthCurrent = healthCurrent;
-    changes.healthMax = healthMax;
   } else if (kind === "body") {
     const bodyHealth = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, {
-      current: readOptionalFormInteger(data, `body-${key}-current`, 9999),
-      max: readOptionalFormInteger(data, `body-${key}-max`, 9999)
+      current: readOptionalFormInteger(data, `body-${key}-current`, 9999)
     }]));
-    if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined || bodyHealth[key].max === undefined)) {
-      showToast("Limb health values must be whole numbers from 0 to 9,999.", true);
+    if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined)) {
+      showToast("Limb damage must be a whole number from 0 to 9,999.", true);
       return;
     }
     changes.bodyHealth = bodyHealth;
   } else {
-    showToast("This health form could not be saved.", true);
+    showToast("This damage form could not be saved.", true);
     return;
   }
   await persistCharacterVitals(character, changes, true);
 }
 
-async function saveCharacterHealth(character, healthCurrent) {
+async function saveCharacterDamage(character, healthCurrent) {
   await persistCharacterVitals(character, { healthCurrent });
 }
 
@@ -2675,6 +2796,10 @@ async function addCatalogItemToCharacter(characterId, catalogId) {
     id: makeId(), catalogId: catalogItem.id, name: catalogItem.name, category: catalogItem.category, quantity: 1, equipped: false,
     chipSkill: catalogItem.chipSkill || "", chipBonus: null, socketed: false,
     attributeBonuses: catalogItem.attributeBonuses || {},
+    armorSP: catalogItem.armorSP ?? null, armorEV: catalogItem.armorEV ?? null,
+    armorLocations: catalogItem.armorLocations || [], armorLayerType: catalogItem.armorLayerType || "standard",
+    armorClass: catalogItem.armorClass || null,
+    armorLayerOrder: catalogItem.armorLayerOrder ?? 1,
     description: catalogItem.description, weaponType: catalogItem.weaponType, ammoType: combat.ammoType,
     ammoLoaded: usesAmmunition(catalogItem) ? combat.capacity : null, weaponStats: catalogItem.weaponStats,
     weight: catalogItem.weight, cost: catalogItem.cost, humanityCost: catalogItem.humanityCost, humanityLoss: humanityLossForItem(catalogItem),
@@ -2917,11 +3042,19 @@ async function refreshEnemyTemplates() {
 
 async function submitAccountForm(form) {
   const data = formValues(form);
+  const isRegister = form.dataset.mode === "register";
+  const password = String(data.get("password") || "");
+  const passwordConfirmation = String(data.get("passwordConfirmation") || "");
+  if (isRegister && password !== passwordConfirmation) {
+    showToast("Passwords do not match.", true);
+    form.elements.passwordConfirmation.focus();
+    return;
+  }
   let authenticated = false;
   try {
-    const response = await apiRequest(form.dataset.mode === "register" ? "/api/register" : "/api/login", {
+    const response = await apiRequest(isRegister ? "/api/register" : "/api/login", {
       method: "POST",
-      body: JSON.stringify({ username: data.get("username"), password: data.get("password") })
+      body: JSON.stringify({ username: data.get("username"), password, ...(isRegister ? { passwordConfirmation } : {}) })
     });
     authenticated = true;
     dialog.close();
@@ -3057,17 +3190,18 @@ function persistForm(form) {
       attributeGeneration = initialAttributeGeneration(form, allocated);
       if (!attributeGeneration) return showToast("The attribute point pool is invalid. Roll again or choose a cinematic tier.", true);
       const startingSkills = initialSkillGeneration(form);
-      if (!startingSkills) return showToast("Choose 9 normal skills and 1 special skill, give each at least 1 point, and allocate exactly 40 skill points.", true);
+      if (!startingSkills) return showToast("Choose 9 normal skills and 1 special skill, give each 1–10 points, and allocate exactly 40 skill points.", true);
       skills = startingSkills.skills;
       skillGeneration = startingSkills.generation;
     }
     const bodyHealth = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, {
-      current: readOptionalFormInteger(data, `body-${key}-current`, 9999),
-      max: readOptionalFormInteger(data, `body-${key}-max`, 9999)
+      current: readOptionalFormInteger(data, `body-${key}-current`, 9999)
     }]));
     const bodyArmorSP = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, readOptionalFormInteger(data, `armor-${key}-sp`, 9999)]));
-    if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined || bodyHealth[key].max === undefined || bodyArmorSP[key] === undefined)) {
-      return showToast("Limb health and armor SP must be whole numbers within their allowed ranges.", true);
+    const healthCurrent = readOptionalFormInteger(data, "healthCurrent", 9999);
+    if (BODY_LOCATIONS.some(({ key }) => bodyHealth[key].current === undefined || bodyArmorSP[key] === undefined)
+      || healthCurrent === undefined) {
+      return showToast("Damage, limb damage, and armor SP must be whole numbers within their allowed ranges.", true);
     }
     const boardWidth = Number(data.get("boardWidth") || previous?.boardWidth || 1);
     const boardHeight = Number(data.get("boardHeight") || previous?.boardHeight || 1);
@@ -3081,14 +3215,10 @@ function persistForm(form) {
       bodyHealth, bodyArmorSP,
       ...(attributeGeneration ? { attributeGeneration } : {}),
       ...(skillGeneration ? { skillGeneration } : {}),
-      healthCurrent: data.get("healthCurrent") === "" ? null : Number(data.get("healthCurrent")),
-      healthMax: data.get("healthMax") === "" ? null : Number(data.get("healthMax")),
+      healthCurrent,
       history: String(data.get("history") ?? "").trim(), notes: String(data.get("notes") ?? "").trim(),
       createdAt: previous?.createdAt || new Date().toISOString()
     };
-    if (character.healthCurrent != null && character.healthMax != null && character.healthCurrent > character.healthMax) {
-      return showToast("Current life cannot exceed maximum life.", true);
-    }
     void saveCharacterToAccount(character, previous, form);
     return;
   } else if (formType === "campaign-form") {
@@ -3120,6 +3250,7 @@ function persistForm(form) {
     const chipSkill = String(data.get("chipSkill") ?? "").trim();
     const chipBonus = readOptionalFormInteger(data, "chipBonus", 9999);
     const attributeBonuses = category.toLowerCase() === "cyberware" ? attributeBonusesFromForm(data) : {};
+    const armor = armorPropertiesFromForm(data);
     const humanityLoss = String(data.get("humanityLoss") ?? "").trim();
     const socketed = Boolean(data.get("socketed"));
     let weaponType = String(data.get("weaponType") ?? "").trim();
@@ -3129,6 +3260,7 @@ function persistForm(form) {
     let ammoLoaded = storedInventory?.ammoLoaded ?? storedGear?.ammoLoaded ?? null;
     if (chipBonus === undefined) return showToast("Skill-chip bonuses must be whole numbers from 0 to 9,999.", true);
     if (attributeBonuses === null) return showToast("Choose a supported attribute and enter a whole-number cyberware modifier from -100 to 100.", true);
+    if (armor === null) return showToast("Enter valid whole-number armor SP/EV values, choose an armor type, and select valid limb areas.", true);
     if (category.toLowerCase() === "cyberware" && !validHumanityLossNotation(humanityLoss || "5")) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
     }
@@ -3178,6 +3310,7 @@ function persistForm(form) {
       sourceReference: String(data.get("sourceReference") ?? "").trim(),
       chipSkill, chipBonus: chipSkill ? chipBonus ?? 0 : null, socketed,
       attributeBonuses,
+      ...armor,
       equipped: Boolean(storedGear?.equipped || storedInventory?.equipped),
       humanityCharged: Boolean(storedGear?.humanityCharged || storedInventory?.humanityCharged),
       humanityLossPaid: storedGear?.humanityLossPaid ?? storedInventory?.humanityLossPaid ?? 0,
@@ -3188,6 +3321,11 @@ function persistForm(form) {
     const previousOwnerId = form.dataset.originalCharacterId;
     if (previousOwnerId && owner && previousOwnerId !== owner.id) {
       return showToast("Remove the item from its current character before assigning it elsewhere.", true);
+    }
+    if (owner) {
+      const ownerLoadout = [...itemsForCharacter(owner).filter(entry => entry.id !== id), item];
+      const armorError = armorLoadoutError(ownerLoadout);
+      if (armorError) return showToast(armorError, true);
     }
     if (owner && signedInAccount) {
       workspace.gear = workspace.gear.filter(entry => entry.id !== id);
@@ -3200,7 +3338,9 @@ function persistForm(form) {
         humanityCharged: item.humanityCharged, humanityLossPaid: item.humanityLossPaid,
         sourceReference: item.sourceReference, customNotes: item.customNotes,
         chipSkill: item.chipSkill, chipBonus: item.chipBonus, socketed: item.socketed, equipped: item.equipped,
-        attributeBonuses: item.attributeBonuses
+        attributeBonuses: item.attributeBonuses,
+        armorSP: item.armorSP, armorEV: item.armorEV, armorLocations: item.armorLocations, armorClass: item.armorClass,
+        armorLayerType: item.armorLayerType, armorLayerOrder: item.armorLayerOrder
       };
       owner.inventory = owner.inventory || [];
       if (owner.inventory.some(entry => entry.id === id)) owner.inventory = owner.inventory.map(entry => entry.id === id ? inventoryItem : entry);
@@ -3228,6 +3368,7 @@ function persistForm(form) {
     const category = String(data.get("category") || "Other").trim();
     const humanityLoss = String(data.get("humanityLoss") || "").trim();
     const attributeBonuses = category.toLowerCase() === "cyberware" ? attributeBonusesFromForm(data) : {};
+    const armor = armorPropertiesFromForm(data);
     if (pricePerLevel === undefined || purchaseCost === undefined || pricePerLevel === 0 || purchaseCost === 0) {
       return showToast("Catalog prices must be positive whole Eddies amounts.", true);
     }
@@ -3235,6 +3376,7 @@ function persistForm(form) {
       return showToast("Enter a Humanity loss value or supported dice formula, such as 0.5, 1D6/2, or 1D6/pair.", true);
     }
     if (attributeBonuses === null) return showToast("Choose a supported attribute and enter a whole-number cyberware modifier from -100 to 100.", true);
+    if (armor === null) return showToast("Enter valid whole-number armor SP/EV values, choose an armor type, and select valid limb areas.", true);
     let weaponData = null;
     let cyberwareCombatData = null;
     if (category.toLowerCase() === "weapon") {
@@ -3269,7 +3411,7 @@ function persistForm(form) {
       weight: String(data.get("weight") || "").trim(), cost: String(data.get("cost") || "").trim(),
       humanityCost: String(data.get("humanityCost") || "").trim(),
       chipSkill: String(data.get("chipSkill") || "").trim(), pricePerLevel, purchaseCost,
-      attributeBonuses,
+      attributeBonuses, ...armor,
       sourceReference: String(data.get("sourceReference") || "").trim(),
       customNotes: String(data.get("customNotes") || "").trim()
     });
@@ -3354,6 +3496,8 @@ async function completeCyberwareInstallation(form) {
   const inventoryIndex = inventory.findIndex(entry => entry.id === item.id);
   if (inventoryIndex >= 0) inventory[inventoryIndex] = installedItem;
   else inventory.push(installedItem);
+  const armorError = armorLoadoutError([...itemsForCharacter(character).filter(entry => entry.id !== item.id), installedItem]);
+  if (armorError) return showToast(armorError, true);
   const updatedCharacter = { ...character, humanity, inventory };
   if (signedInAccount) {
     if (!await saveCharacterToAccount(updatedCharacter, character, null, false)) return;
@@ -3383,6 +3527,11 @@ async function toggleItemEquipped(characterId, itemId) {
   const nextEquipped = !item.equipped;
   const isCyberware = String(item.category || "").toLowerCase() === "cyberware";
   if (nextEquipped && isCyberware && Number(item.quantity) < 1) return showToast("Add at least one unit before installing cyberware.", true);
+  const armorError = armorLoadoutError([
+    ...itemsForCharacter(character).filter(entry => entry.id !== itemId),
+    { ...item, equipped: nextEquipped }
+  ]);
+  if (armorError) return showToast(armorError, true);
   if (nextEquipped && isCyberware && !item.humanityCharged) {
     openHumanityInstallDialog(character, item);
     renderSheet();
@@ -3513,7 +3662,7 @@ function handleAction(button) {
     selectedBoardPieceKind = "token";
     renderBoard();
   }
-  if (action === "adjust-health") adjustSelectedHealth(Number(button.dataset.delta));
+  if (action === "adjust-damage") adjustSelectedDamage(Number(button.dataset.delta));
   if (action === "remove-board-piece") {
     if (!selectedBoardPieceId) return showToast("Select a piece on the board first.", true);
     if (!confirmAction("Remove the selected piece from the shared board?")) return;
@@ -3781,10 +3930,19 @@ document.getElementById("board-zoom").addEventListener("input", event => {
   document.getElementById("board-zoom-value").value = `${boardZoom} px`;
 });
 document.addEventListener("change", event => {
+  const authForm = event.target.closest('form[name="auth-form"]');
+  if (authForm && event.target.name === "showPassword") {
+    const type = event.target.checked ? "text" : "password";
+    authForm.querySelectorAll('[name="password"], [name="passwordConfirmation"]').forEach(input => {
+      input.type = type;
+    });
+  }
   const catalogForm = event.target.closest('form[name="catalog-item-form"]');
   if (catalogForm && ["category", "weaponType", "cyberwareWeaponEnabled"].includes(event.target.name)) updateCatalogWeaponFields(catalogForm);
+  if (catalogForm && event.target.name === "armorLayerType") updateArmorFields(catalogForm);
   const gearForm = event.target.closest('form[name="gear-form"]');
   if (gearForm && ["category", "cyberwareWeaponEnabled"].includes(event.target.name)) updateGearItemFields(gearForm);
+  if (gearForm && event.target.name === "armorLayerType") updateArmorFields(gearForm);
   const characterForm = event.target.closest('form[name="character-form"]');
   if (characterForm && ["attributeMethod", "cinematicTier"].includes(event.target.name)) updateAttributeAllocation(characterForm);
   if (characterForm && ["normalSkill", "specialSkill"].includes(event.target.name)) updateSkillAllocation(characterForm);

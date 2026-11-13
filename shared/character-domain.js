@@ -8,6 +8,125 @@ export const BODY_LOCATIONS = [
   { key: "rightLeg", label: "Right leg" },
   { key: "leftLeg", label: "Left leg" }
 ];
+const ARMOR_LAYER_TYPES = ["standard", "subdermal", "skinweave"];
+const ARMOR_CLASSES = ["light", "heavy"];
+
+function validArmorInteger(value, max) {
+  if (value == null || value === "") return true;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= max;
+}
+
+export function validArmorItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  if (!validArmorInteger(item.armorSP, 9999) || !validArmorInteger(item.armorEV, 99)) return false;
+  if (item.armorLocations != null && (!Array.isArray(item.armorLocations)
+    || item.armorLocations.some(location => !BODY_LOCATIONS.some(bodyLocation => bodyLocation.key === location))
+    || new Set(item.armorLocations).size !== item.armorLocations.length)) return false;
+  if (item.armorLayerType != null && !ARMOR_LAYER_TYPES.includes(item.armorLayerType)) return false;
+  if (item.armorClass != null && item.armorClass !== "" && !ARMOR_CLASSES.includes(item.armorClass)) return false;
+  if (item.armorLayerOrder != null) {
+    const order = Number(item.armorLayerOrder);
+    if (!Number.isInteger(order)
+      || (item.armorLayerType === "skinweave" ? ![0, 1].includes(order)
+        : String(item.category || "").toLowerCase() === "cyberware" ? order !== 1
+          : order < 1 || order > 3)) return false;
+  }
+  return true;
+}
+
+export function normalizeArmorItem(item = {}) {
+  const armorInteger = (value, max) => normalizeOptionalInteger(value, max);
+  const armorLayerType = ARMOR_LAYER_TYPES.includes(item.armorLayerType) ? item.armorLayerType : "standard";
+  const category = String(item.category || "").toLowerCase();
+  return {
+    armorSP: armorInteger(item.armorSP, 9999),
+    armorEV: armorInteger(item.armorEV, 99),
+    armorLocations: Array.isArray(item.armorLocations)
+      ? [...new Set(item.armorLocations.filter(location => BODY_LOCATIONS.some(bodyLocation => bodyLocation.key === location)))]
+      : [],
+    armorLayerType,
+    armorClass: ARMOR_CLASSES.includes(item.armorClass) ? item.armorClass : null,
+    armorLayerOrder: armorLayerType === "skinweave" ? 0
+      : category === "cyberware" ? 1
+        : normalizeOptionalInteger(item.armorLayerOrder, 3) || 1
+  };
+}
+
+export function armorLoadoutError(inventory) {
+  if (inventory == null) return "";
+  if (!Array.isArray(inventory) || inventory.some(item => !validArmorItem(item))) {
+    return "Armor SP, EV, limb coverage, and layer settings must be valid.";
+  }
+  const layersByLocation = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => [key, 0]));
+  for (const item of inventory) {
+    if (!item.equipped || Number(item.quantity ?? 1) <= 0) continue;
+    const locations = item.armorLocations || [];
+    if (item.armorSP != null && Number(item.armorSP) > 0 && !locations.length) {
+      return `Choose at least one covered limb for ${item.name || "each equipped armor item"}.`;
+    }
+    if (item.armorLayerType === "skinweave") continue;
+    const quantity = Math.max(1, Number(item.quantity) || 1);
+    for (const location of locations) layersByLocation[location] += quantity;
+  }
+  const overLayeredLocation = BODY_LOCATIONS.find(({ key }) => layersByLocation[key] > 3);
+  return overLayeredLocation ? `A limb can have no more than three armor layers (${overLayeredLocation.label} exceeds the limit).` : "";
+}
+
+const armorLayerBonus = difference => {
+  if (difference <= 4) return 5;
+  if (difference <= 8) return 4;
+  if (difference <= 14) return 3;
+  if (difference <= 20) return 2;
+  if (difference <= 26) return 1;
+  return 0;
+};
+
+export function armorCalculationFor(character, inventory = character?.inventory || []) {
+  const equippedArmor = inventory.filter(item => item?.equipped && Number(item.quantity ?? 1) > 0
+    && (item.armorSP != null || item.armorEV != null || item.armorLocations?.length));
+  const itemEV = equippedArmor.reduce((sum, item) =>
+    sum + (Number(item.armorEV) || 0) * Math.max(1, Number(item.quantity) || 1), 0);
+  const limbs = Object.fromEntries(BODY_LOCATIONS.map(({ key }) => {
+    const layers = [];
+    for (const [index, item] of equippedArmor.entries()) {
+      if (!item.armorLocations?.includes(key)) continue;
+      const quantity = Math.max(1, Number(item.quantity) || 1);
+      for (let copy = 0; copy < quantity; copy += 1) {
+        layers.push({
+          sp: item.armorSP == null ? null : Number(item.armorSP),
+          type: item.armorLayerType || "standard",
+          order: item.armorLayerType === "skinweave" || String(item.category || "").toLowerCase() === "cyberware"
+            ? 1
+            : Number(item.armorLayerOrder) || 1,
+          cyberware: String(item.category || "").toLowerCase() === "cyberware",
+          index
+        });
+      }
+    }
+    layers.sort((first, second) =>
+      first.order - second.order
+      || (first.type === "skinweave" ? 0 : first.cyberware ? 1 : 2)
+        - (second.type === "skinweave" ? 0 : second.cyberware ? 1 : 2)
+      || first.index - second.index
+    );
+    const effectiveLayerCount = layers.filter(layer => layer.type !== "skinweave").length;
+    let sp = null;
+    for (const layer of layers) {
+      if (layer.sp == null) continue;
+      sp = sp == null ? layer.sp : layer.sp + armorLayerBonus(Math.abs(layer.sp - sp));
+    }
+    if (sp == null) sp = normalizeOptionalInteger(character?.bodyArmorSP?.[key], 9999);
+    return [key, { sp, layerCount: effectiveLayerCount }];
+  }));
+  const maxLayerCount = Math.max(0, ...Object.values(limbs).map(limb => limb.layerCount));
+  const layerEV = Math.max(0, maxLayerCount - 1);
+  return { limbs, itemEV, layerEV, totalEV: itemEV + layerEV };
+}
+
+export function playerCharacterCount(characters = []) {
+  return characters.filter(character => !character.isNpc).length;
+}
 
 export function normalizeSkill(skill) {
   if (skill && typeof skill === "object") {
@@ -44,8 +163,7 @@ export function normalizeBodyHealth(value) {
   return Object.fromEntries(BODY_LOCATIONS.map(({ key }) => {
     const location = value?.[key] || {};
     return [key, {
-      current: normalizeOptionalInteger(location.current, 9999),
-      max: normalizeOptionalInteger(location.max, 9999)
+      current: normalizeOptionalInteger(location.current, 9999)
     }];
   }));
 }
@@ -114,6 +232,7 @@ export function effectiveAttributesFor(character, inventory = character?.invento
       attributes[attribute] += bonus;
     }
   }
+  attributes.REF -= armorCalculationFor(character, inventory).totalEV;
   return attributes;
 }
 
@@ -140,13 +259,14 @@ export function validHumanityLossNotation(value) {
 
 export function normalizeCharacter(character) {
   const current = character.healthCurrent;
-  const maximum = character.healthMax;
+  const { healthMax: _healthMax, ...characterWithoutHealthMax } = character;
   const eddies = Number(character.eddies);
   const inventory = Array.isArray(character.inventory)
     ? character.inventory.map(item => ({
       ...item,
       humanityLoss: humanityLossForItem(item),
       attributeBonuses: normalizeAttributeBonuses(item.attributeBonuses, item.category),
+      ...normalizeArmorItem(item),
       humanityCharged: Boolean(item.humanityCharged || (item.equipped && character.humanity != null)),
       humanityLossPaid: isValidHumanityAmount(item.humanityLossPaid, 9999) ? Number(item.humanityLossPaid) : 0
     }))
@@ -161,7 +281,7 @@ export function normalizeCharacter(character) {
     ? Math.max(0, humanityMaximum - installedLoss)
     : Number(character.humanity);
   return {
-    ...character,
+    ...characterWithoutHealthMax,
     isNpc: Boolean(character.isNpc),
     boardWidth: Number.isInteger(Number(character.boardWidth)) && Number(character.boardWidth) >= 1 && Number(character.boardWidth) <= 10
       ? Number(character.boardWidth)
@@ -175,7 +295,6 @@ export function normalizeCharacter(character) {
     bodyHealth: normalizeBodyHealth(character.bodyHealth),
     bodyArmorSP: normalizeBodyArmorSP(character.bodyArmorSP),
     healthCurrent: current != null && Number.isFinite(Number(current)) ? Number(current) : null,
-    healthMax: maximum != null && Number.isFinite(Number(maximum)) ? Number(maximum) : null,
     eddies: Number.isInteger(eddies) ? Math.max(0, Math.min(999999999, eddies)) : 0
   };
 }

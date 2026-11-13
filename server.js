@@ -8,10 +8,13 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  armorLoadoutError,
   effectiveAttributesFor,
   isValidHumanityAmount as validHumanityAmount,
+  normalizeArmorItem,
   normalizeAttributeBonuses,
   validAttributeBonuses,
+  validArmorItem,
   validHumanityLossNotation as validateHumanityLossNotation
 } from "./shared/character-domain.js";
 import { migrateStoreData, STORE_SCHEMA_VERSION } from "./server/store-migrations.js";
@@ -45,8 +48,8 @@ const CINEMATIC_ATTRIBUTE_POOLS = {
   average: 50
 };
 const ENEMY_TEMPLATES = [
-  { name: "Corner lookout", role: "Street lookout", attributes: { REF: 5, COOL: 4, BODY: 5 }, health: { current: 12, max: 12 }, gear: ["Compact sidearm", "Old radio"] },
-  { name: "Railyard bruiser", role: "Railyard bruiser", attributes: { REF: 4, COOL: 5, BODY: 8 }, health: { current: 20, max: 20 }, gear: ["Heavy gloves", "Reinforced coat"] }
+  { name: "Corner lookout", role: "Street lookout", attributes: { REF: 5, COOL: 4, BODY: 5 }, health: { current: 0 }, gear: ["Compact sidearm", "Old radio"] },
+  { name: "Railyard bruiser", role: "Railyard bruiser", attributes: { REF: 4, COOL: 5, BODY: 8 }, health: { current: 0 }, gear: ["Heavy gloves", "Reinforced coat"] }
 ];
 const scrypt = promisify(scryptCallback);
 const MIME_TYPES = {
@@ -98,7 +101,7 @@ function validBodyHealth(value) {
   return BODY_LOCATION_KEYS.every(key => {
     const location = value[key];
     return location == null || (typeof location === "object" && !Array.isArray(location)
-      && validOptionalInteger(location.current, 9999) && validOptionalInteger(location.max, 9999));
+      && validOptionalInteger(location.current, 9999));
   });
 }
 
@@ -113,8 +116,7 @@ function sanitizeBodyHealth(value, fallback) {
   return Object.fromEntries(BODY_LOCATION_KEYS.map(key => {
     const location = source?.[key] || {};
     return [key, {
-      current: location.current == null || location.current === "" ? null : finiteInteger(location.current, 0, 0, 9999),
-      max: location.max == null || location.max === "" ? null : finiteInteger(location.max, 0, 0, 9999)
+      current: location.current == null || location.current === "" ? null : finiteInteger(location.current, 0, 0, 9999)
     }];
   }));
 }
@@ -173,7 +175,7 @@ function sanitizeInitialSkillGeneration(input, skills) {
     const names = skills.map(skill => skill.name.toLowerCase());
     const requestedNormals = Array.isArray(input.normalSkills) ? input.normalSkills.map(name => boundedText(name, 80)) : [];
     if (total !== 40 || input.total !== 40 || normalSkills.length !== 9 || specialSkills.length !== 1
-      || skills.some(skill => skill.value < 1) || new Set(names).size !== skills.length
+      || skills.some(skill => skill.value < 1 || skill.value > 10) || new Set(names).size !== skills.length
       || !SPECIAL_SKILL_NAMES.includes(specialSkills[0]?.name)
       || requestedNormals.length !== 9 || new Set(requestedNormals.map(name => name.toLowerCase())).size !== 9
       || requestedNormals.some(name => !normalSkills.some(skill => skill.name === name))
@@ -191,6 +193,7 @@ function sanitizeInitialSkillGeneration(input, skills) {
 
 function sanitizeCharacter(input, existing = {}) {
   if (!input || typeof input !== "object") return null;
+  const { healthMax: _healthMax, ...existingCharacter } = existing;
   if (input.isNpc != null && typeof input.isNpc !== "boolean") return null;
   const isNewCharacter = !existing.id;
   const isNpc = isNewCharacter ? Boolean(input.isNpc) : Boolean(existing.isNpc);
@@ -211,6 +214,7 @@ function sanitizeCharacter(input, existing = {}) {
     if (typeof skill === "string") return { name: boundedText(skill, 80), value: 0, special: false };
     return { name: boundedText(skill?.name, 80), value: finiteInteger(skill?.value, 0, -100, 100), special: Boolean(skill?.special) };
   }).filter(skill => skill.name) : [];
+  if (isNewCharacter && skills.some(skill => skill.value < 0 || skill.value > 10)) return null;
   const skillGeneration = isNewCharacter && !isNpc
     ? sanitizeInitialSkillGeneration(input.skillGeneration, skills)
     : existing.skillGeneration;
@@ -218,7 +222,7 @@ function sanitizeCharacter(input, existing = {}) {
   if (isNewCharacter && skillGeneration?.method === "creation"
     && (!Array.isArray(input.skills) || input.skills.length !== 10
       || input.skills.some(skill => !skill || typeof skill !== "object"
-        || !Number.isInteger(Number(skill.value)) || Number(skill.value) < 1 || Number(skill.value) > 40
+        || !Number.isInteger(Number(skill.value)) || Number(skill.value) < 1 || Number(skill.value) > 10
         || typeof skill.special !== "boolean"))) return null;
   const derivedSource = input.derived === undefined ? existing.derived : input.derived;
   const derived = Array.isArray(derivedSource) ? derivedSource.slice(0, 50).map(item => boundedText(item, 180)).filter(Boolean) : [];
@@ -240,6 +244,7 @@ function sanitizeCharacter(input, existing = {}) {
       chipBonus: item?.chipBonus == null || item.chipBonus === "" ? null : finiteInteger(item.chipBonus, 0, 0, 9999),
       socketed: Boolean(item?.socketed),
       attributeBonuses: normalizeAttributeBonuses(item?.attributeBonuses, category),
+      ...normalizeArmorItem(item),
       ammoType: boundedText(item?.ammoType, 40),
       ammoLoaded: item?.ammoLoaded == null || item.ammoLoaded === "" ? null : finiteInteger(item.ammoLoaded, 0, 0, 9999),
       description: boundedText(item?.description, 1000),
@@ -264,13 +269,13 @@ function sanitizeCharacter(input, existing = {}) {
     ? Math.min(humanityMaximum, Math.max(0, validHumanityAmount(storedHumanity, 9999) ? storedHumanity : humanityMaximum))
     : Number(input.humanity);
   if (!validHumanityAmount(humanity, humanityMaximum)) return null;
-  const healthCurrent = input.healthCurrent == null || input.healthCurrent === "" ? null : finiteInteger(input.healthCurrent, 0, 0, 9999);
-  const healthMax = input.healthMax == null || input.healthMax === "" ? null : finiteInteger(input.healthMax, 0, 0, 9999);
+  const healthCurrent = input.healthCurrent == null || input.healthCurrent === ""
+    ? isNewCharacter ? 0 : null
+    : finiteInteger(input.healthCurrent, 0, 0, 9999);
   const eddies = input.eddies == null || input.eddies === "" ? finiteInteger(existing.eddies, 0, 0, 999999999) : Number(input.eddies);
   if (!Number.isInteger(eddies) || eddies < 0 || eddies > 999999999) return null;
-  if (healthCurrent != null && healthMax != null && healthCurrent > healthMax) return null;
   return {
-    ...existing,
+    ...existingCharacter,
     id: existing.id || randomUUID(),
     name,
     isNpc,
@@ -288,7 +293,6 @@ function sanitizeCharacter(input, existing = {}) {
     derived,
     inventory,
     healthCurrent,
-    healthMax,
     eddies,
     history: boundedText(input.history, 5000),
     notes: boundedText(input.notes, 5000),
@@ -311,6 +315,7 @@ function sanitizeCatalogItem(input) {
   const pricePerLevel = input.pricePerLevel == null || input.pricePerLevel === "" ? null : Number(input.pricePerLevel);
   const purchaseCost = input.purchaseCost == null || input.purchaseCost === "" ? null : Number(input.purchaseCost);
   if (!validAttributeBonuses(input.attributeBonuses, category)
+    || !validArmorItem(input)
     || (chipSkill && boundedText(input.category, 40).toLowerCase() !== "cyberware")
     || (chipSkillOptions.length && (boundedText(input.category, 40).toLowerCase() !== "cyberware"
       || new Set(chipSkillOptions.map(option => option.toLowerCase())).size !== chipSkillOptions.length))
@@ -330,6 +335,7 @@ function sanitizeCatalogItem(input) {
     chipSkill,
     chipSkillOptions,
     attributeBonuses: normalizeAttributeBonuses(input.attributeBonuses, category),
+    ...normalizeArmorItem(input),
     pricePerLevel,
     purchaseCost,
     weight: boundedText(input.weight, 40),
@@ -391,14 +397,13 @@ function normalizePiece(piece, kind) {
   if (kind === "token") {
     const attributes = {};
     for (const key of ["INT", "REF", "TECH", "COOL", "ATTR", "LUCK", "MA", "BODY", "EMP"]) {
-      if (piece.attributes?.[key] != null) attributes[key] = finiteInteger(piece.attributes[key], 0, 0, 99);
+      if (piece.attributes?.[key] != null) attributes[key] = finiteInteger(piece.attributes[key], 0, key === "REF" ? -9999 : 0, 99);
     }
     normalized.characterId = boundedText(piece.characterId, 100);
     normalized.ownerUserId = boundedText(piece.ownerUserId, 100);
     normalized.health = piece.health && typeof piece.health === "object" ? {
-      current: finiteInteger(piece.health.current, 0, 0, 9999),
-      max: finiteInteger(piece.health.max, 0, 0, 9999)
-    } : { current: 0, max: 0 };
+      current: finiteInteger(piece.health.current, 0, 0, 9999)
+    } : { current: 0 };
     normalized.initiative = finiteInteger(piece.initiative, 0, -1000, 1000);
     normalized.attributes = attributes;
     normalized.skills = Array.isArray(piece.skills) ? piece.skills.slice(0, 100).map(skill => ({
@@ -842,7 +847,7 @@ function syncCharacterToRooms(character, ownerUserId) {
       token.name = character.name;
       token.role = character.role || "Character";
       token.attributes = effectiveAttributesFor(character);
-      token.health = { current: character.healthCurrent ?? 0, max: character.healthMax ?? 0 };
+      token.health = { current: character.healthCurrent ?? 0 };
       token.gear = (character.inventory || []).slice(0, 20).map(item => item.name);
       token.portraitUrl = updatedCharacter.portraitUrl;
       roomBoardChanged = true;
@@ -885,6 +890,9 @@ async function handleApi(request, response, requestUrl) {
     if (pathname === "/api/register") {
       if (!validUsername) return jsonResponse(response, 400, { error: "Use a 3–24 character username with letters, numbers, or underscores." });
       if (!validPassword) return jsonResponse(response, 400, { error: "Password must be 12–200 characters." });
+      if (typeof input.passwordConfirmation !== "string" || input.passwordConfirmation !== password) {
+        return jsonResponse(response, 400, { error: "Passwords do not match." });
+      }
     } else if (!validUsername || !validPassword) {
       return jsonResponse(response, 401, { error: "Username or password is incorrect." });
     }
@@ -1032,8 +1040,15 @@ async function handleApi(request, response, requestUrl) {
     const input = await readJsonBody(request);
     const playerCharacterCount = session.account.characters.filter(character => !character.isNpc).length;
     if (!input.isNpc && playerCharacterCount >= MAX_CHARACTERS_PER_ACCOUNT) return jsonResponse(response, 409, { error: `Each account can create up to ${MAX_CHARACTERS_PER_ACCOUNT} player characters.` });
+    const armorError = armorLoadoutError(input.inventory);
+    if (armorError) return jsonResponse(response, 400, { error: armorError });
     const character = sanitizeCharacter(input);
-    if (!character) return jsonResponse(response, 400, { error: "Enter valid character details, allocate a valid attribute pool with values from 0 to 10, and choose 9 normal skills plus 1 special skill totaling exactly 40 points for player characters." });
+    if (!character) {
+      const error = input.isNpc
+        ? "Enter valid NPC details; attributes and new skill ratings must be whole numbers from 0 to 10."
+        : "Enter valid character details, allocate a valid attribute pool with values from 0 to 10, and choose 9 normal skills plus 1 special skill with 1–10 points each, totaling exactly 40 for player characters.";
+      return jsonResponse(response, 400, { error });
+    }
     session.account.characters.push(character);
     await persistStore();
     return jsonResponse(response, 201, { character: publicCharacter(character), count: playerCharacterCount + (character.isNpc ? 0 : 1), maxCharacters: MAX_CHARACTERS_PER_ACCOUNT });
@@ -1046,8 +1061,10 @@ async function handleApi(request, response, requestUrl) {
     if (index < 0) return jsonResponse(response, 404, { error: "Character not found in this account." });
     if (request.method === "PUT") {
       const input = await readJsonBody(request);
+      const armorError = armorLoadoutError(input.inventory === undefined ? session.account.characters[index].inventory : input.inventory);
+      if (armorError) return jsonResponse(response, 400, { error: armorError });
       const character = sanitizeCharacter(input, session.account.characters[index]);
-      if (!character) return jsonResponse(response, 400, { error: "Enter a valid character name, health values, and whole-number eddies from 0 to 999,999,999." });
+      if (!character) return jsonResponse(response, 400, { error: "Enter a valid character name, damage values, and whole-number eddies from 0 to 999,999,999." });
       session.account.characters[index] = character;
       syncCharacterToRooms(character, session.userId);
       await persistStore();
@@ -1456,7 +1473,7 @@ websocketServer.on("connection", async (socket, request, url) => {
     if (message.type === "event") {
       const event = sanitizeEvent(message.event, socket.userName);
       if (!event) {
-        send(socket, { type: "error", message: "That roll or health update was invalid." });
+        send(socket, { type: "error", message: "That roll or damage update was invalid." });
         return;
       }
       if (event.kind === "roll") {
@@ -1499,18 +1516,17 @@ websocketServer.on("connection", async (socket, request, url) => {
       if (event.kind === "health") {
         const token = room.board.tokens.find(item => item.id === event.characterId || item.characterId === event.characterId);
         if (!token || (!socket.isGm && (token.kind !== "character" || token.ownerUserId !== socket.userId))) {
-          send(socket, { type: "error", message: "Players can only change life for their own character tokens." });
+          send(socket, { type: "error", message: "Players can only change damage for their own character tokens." });
           return;
         }
-        const maximum = Number(token.health.max || 0);
         const current = event.current;
-        if ((!socket.isGm && maximum && current > maximum) || current < 0) {
-          send(socket, { type: "error", message: "Life must remain within this character's current range." });
+        if (!Number.isInteger(current) || current < 0 || current > 9999) {
+          send(socket, { type: "error", message: "Damage must be a whole number from 0 to 9,999." });
           return;
         }
         const actualDelta = current - Number(token.health.current || 0);
         if (!actualDelta) {
-          send(socket, { type: "error", message: "That life update would not change the current value." });
+          send(socket, { type: "error", message: "That damage update would not change the current value." });
           return;
         }
         token.health.current = current;
@@ -1519,7 +1535,6 @@ websocketServer.on("connection", async (socket, request, url) => {
         event.characterName = token.name;
         event.delta = actualDelta;
         event.current = current;
-        event.max = maximum;
       }
       room.events.push(event);
       room.events = room.events.slice(-MAX_EVENTS);
