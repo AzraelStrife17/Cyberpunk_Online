@@ -8,6 +8,13 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  BOARD_PRESETS,
+  DEFAULT_BOARD_PRESET_ID,
+  LEGACY_BOARD_PRESET_ID,
+  boardPresetFor,
+  mergePlayerBoardUpdate
+} from "./shared/board-domain.js";
+import {
   armorLoadoutError,
   effectiveAttributesFor,
   isValidHumanityAmount as validHumanityAmount,
@@ -27,8 +34,6 @@ const DEFAULT_CATALOG_FILES = ["weapon-summaries.json", "equipment-summaries.jso
 const PORTRAIT_DIR = path.join(DATA_DIR, "portraits");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8000);
-const BOARD_COLUMNS = 500;
-const BOARD_ROWS = 500;
 const MAX_EVENTS = 80;
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_CHARACTERS_PER_ACCOUNT = 10;
@@ -378,19 +383,19 @@ function isTrustedHost(hostHeader) {
   }
 }
 
-function normalizePiece(piece, kind) {
+function normalizePiece(piece, kind, preset) {
   if (!piece || typeof piece !== "object") return null;
   const id = boundedText(piece.id, 100);
   const name = boundedText(piece.name, 80);
   if (!id || !name) return null;
-  const width = finiteInteger(piece.width, 1, 1, BOARD_COLUMNS);
-  const height = finiteInteger(piece.height, 1, 1, BOARD_ROWS);
+  const width = finiteInteger(piece.width, 1, 1, preset.columns);
+  const height = finiteInteger(piece.height, 1, 1, preset.rows);
   const normalized = {
     id,
     kind: kind === "token" ? (piece.kind === "enemy" ? "enemy" : "character") : "terrain",
     name,
-    x: finiteInteger(piece.x, 0, 0, BOARD_COLUMNS - width),
-    y: finiteInteger(piece.y, 0, 0, BOARD_ROWS - height),
+    x: finiteInteger(piece.x, 0, 0, preset.columns - width),
+    y: finiteInteger(piece.y, 0, 0, preset.rows - height),
     width,
     height
   };
@@ -421,10 +426,18 @@ function normalizePiece(piece, kind) {
 }
 
 function normalizeBoard(board) {
-  if (!board || typeof board !== "object") return { tokens: [], terrain: [] };
+  if (!board || typeof board !== "object") return { presetId: DEFAULT_BOARD_PRESET_ID, tokens: [], terrain: [] };
+  const presetId = typeof board.presetId === "string"
+    ? board.presetId
+    : LEGACY_BOARD_PRESET_ID;
+  const preset = boardPresetFor(presetId);
+  const validPresetId = BOARD_PRESETS.some(item => item.id === presetId) || presetId === LEGACY_BOARD_PRESET_ID
+    ? preset.id
+    : DEFAULT_BOARD_PRESET_ID;
   return {
-    tokens: Array.isArray(board.tokens) ? board.tokens.slice(0, 100).map(piece => normalizePiece(piece, "token")).filter(Boolean) : [],
-    terrain: Array.isArray(board.terrain) ? board.terrain.slice(0, 100).map(piece => normalizePiece(piece, "terrain")).filter(Boolean) : []
+    presetId: validPresetId,
+    tokens: Array.isArray(board.tokens) ? board.tokens.slice(0, 100).map(piece => normalizePiece(piece, "token", preset)).filter(Boolean) : [],
+    terrain: Array.isArray(board.terrain) ? board.terrain.slice(0, 100).map(piece => normalizePiece(piece, "terrain", preset)).filter(Boolean) : []
   };
 }
 
@@ -583,7 +596,7 @@ function getRoom(campaignId, campaignName) {
     store.rooms[campaignId] = {
       campaignId,
       name: boundedText(campaignName, 120) || "Shared campaign",
-      board: { tokens: [], terrain: [] },
+      board: { presetId: DEFAULT_BOARD_PRESET_ID, tokens: [], terrain: [] },
       events: [],
       updatedAt: new Date().toISOString(),
       ownerUserId: "",
@@ -799,6 +812,7 @@ function broadcastRoster(room) {
 function boardForViewer(board, socket) {
   if (socket.isGm) return board;
   return {
+    presetId: board.presetId,
     terrain: board.terrain,
     tokens: board.tokens.map(token => {
       if (token.kind === "character" && token.ownerUserId === socket.userId) return token;
@@ -855,25 +869,6 @@ function syncCharacterToRooms(character, ownerUserId) {
     if (roomBoardChanged) broadcastBoardState(room);
     if (room.roster.some(entry => entry.characterId === character.id)) broadcastRoster(room);
   }
-}
-
-function mergePlayerBoardUpdate(requestedBoard, currentBoard, userId) {
-  if (JSON.stringify(requestedBoard.terrain) !== JSON.stringify(currentBoard.terrain)) return null;
-  const requestedTokens = new Map(requestedBoard.tokens.map(token => [token.id, token]));
-  if (requestedTokens.size !== currentBoard.tokens.length || requestedTokens.size !== requestedBoard.tokens.length) return null;
-  const tokens = [];
-  for (const previous of currentBoard.tokens) {
-    const requested = requestedTokens.get(previous.id);
-    if (!requested) return null;
-    if (previous.kind === "character" && previous.ownerUserId === userId) {
-      if (JSON.stringify({ ...previous, x: 0, y: 0 }) !== JSON.stringify({ ...requested, x: 0, y: 0 })) return null;
-      tokens.push({ ...previous, x: requested.x, y: requested.y });
-    } else {
-      if (requested.x !== previous.x || requested.y !== previous.y) return null;
-      tokens.push(previous);
-    }
-  }
-  return { tokens, terrain: currentBoard.terrain };
 }
 
 async function handleApi(request, response, requestUrl) {

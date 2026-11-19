@@ -22,6 +22,14 @@ import { apiRequest } from "./client/api-client.js";
 import { renderCampaigns as renderCampaignsView } from "./client/features/campaigns-view.js";
 import { renderCharacters as renderCharactersView } from "./client/features/characters-view.js";
 import {
+  BOARD_PRESETS,
+  DEFAULT_BOARD_PRESET_ID,
+  LEGACY_BOARD_PRESET,
+  LEGACY_BOARD_PRESET_ID,
+  boardPresetFor,
+  rescaleBoardPiece
+} from "./shared/board-domain.js";
+import {
   ATTRIBUTES,
   BODY_LOCATIONS,
   armorCalculationFor,
@@ -73,10 +81,8 @@ const VIEWS = {
   board: "TACTICAL BOARD"
 };
 const makeId = () => globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const BOARD_COLUMNS = 500;
-const BOARD_ROWS = 500;
-const BOARD_RULER_INTERVAL = 25;
 const BOARD_CELL_SIZE = 32;
+const emptyBoardState = () => ({ presetId: DEFAULT_BOARD_PRESET_ID, tokens: [], terrain: [] });
 const MAX_CHARACTERS_PER_ACCOUNT = 10;
 const MAX_CAMPAIGN_PLAYERS = 10;
 const TERRAIN_TEMPLATES = [
@@ -212,6 +218,7 @@ let campaignRoster = [];
 let campaignPlayerCount = 0;
 let boardIsGm = false;
 let sheetTab = "overview";
+let sheetActionTab = "real";
 let inventoryTab = "cyberware";
 let skillTab = "REF";
 let selectedSheetCharacterId = "";
@@ -224,13 +231,16 @@ let catalogTargetCharacterId = "";
 let activeView = "dashboard";
 let sheetLayout = loadSheetLayoutPreference();
 let boardTab = "terrain";
+let boardSpace = "real";
 let activeBoardCampaignId = "";
 let connectedCampaignId = "";
 let activeBoardCampaignName = "";
 let connectionStatus = "OFFLINE";
 let activeGmKey = "";
-let boardState = { tokens: [], terrain: [] };
+let boardState = emptyBoardState();
 let boardZoom = BOARD_CELL_SIZE;
+let netBoardZoom = BOARD_CELL_SIZE;
+let selectedNetGridCell = "A1";
 let roomEvents = [];
 let enemyTemplates = [];
 let sheetActionHistory = {};
@@ -238,6 +248,7 @@ let activeSocket = null;
 let selectedBoardTokenId = "";
 let selectedBoardPieceId = "";
 let selectedBoardPieceKind = "";
+let boardPanStart = null;
 let pendingBoardCharacterId = "";
 let boardRollCharacterId = "";
 let boardRollSkillName = "";
@@ -330,7 +341,7 @@ async function signOutAccount() {
   boardIsGm = false;
   activeGmKey = "";
   enemyTemplates = [];
-  boardState = { tokens: [], terrain: [] };
+  boardState = emptyBoardState();
   roomEvents = [];
   campaignRoster = [];
   selectedBoardTokenId = "";
@@ -904,7 +915,8 @@ function renderInventoryPanel(character, inventory) {
 
 function renderCharacterActions(character, inventory) {
   const equippedWeapons = inventory.filter(item => item.equipped && isWeaponActionItem(item));
-  const ref = effectiveAttributesFor(character, inventory).REF;
+  const effectiveAttributes = effectiveAttributesFor(character, inventory);
+  const ref = effectiveAttributes.REF;
   const initiativeRow = `<article class="sheet-attack-action sheet-initiative-action">
     <div class="sheet-attack-title"><strong>Initiative Roll</strong><small>1d10 + REF + modifier</small></div>
     <div class="sheet-attack-roll"><button class="button button-primary hit-roll-button" type="button" data-action="sheet-initiative-roll" data-character-id="${escapeHtml(character.id)}" aria-label="Roll initiative for ${escapeHtml(character.name)}">Roll initiative</button></div>
@@ -926,9 +938,21 @@ function renderCharacterActions(character, inventory) {
       <span class="sheet-attack-bonus">${escapeHtml(skill.name)} ${escapeHtml(skill.value)} + REF ${ref} + WA ${combat.weaponAccuracy >= 0 ? "+" : ""}${combat.weaponAccuracy}</span><span class="sheet-attack-damage">DMG ${damageButton}</span>
     </article>`;
   }).join("") : `<div class="board-empty-inline">Equip a weapon or weapon-capable cyberware in the inventory to add an attack here.</div>`;
-  return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Attacks, checks &amp; initiative</h2></div></div><div class="panel-body">
+  const interfaceSkill = (character.skills || []).map(normalizeSkill).find(skill => skill.name.toLowerCase() === "interface");
+  const interfaceChipBonus = skillChipBonusFor(character, "Interface");
+  const interfaceSkillValue = (interfaceSkill?.value || 0) + interfaceChipBonus;
+  const realSpacePanel = `<div class="sheet-action-panel" id="real-space-actions" ${sheetActionTab === "real" ? "" : "hidden"}>
     <div class="sheet-roll-settings"><label><span>Target</span><input class="input-control" id="sheet-roll-target" type="number" value="${escapeHtml(sheetRollTarget)}"></label><label><span>Modifier</span><input class="input-control" id="sheet-roll-modifier" type="number" value="${escapeHtml(sheetRollModifier)}"></label></div>
     <div class="sheet-attack-list">${initiativeRow}${attackRows}</div><p class="field-hint">Initiative uses REF + 1d10. Weapon hits use REF + the matching skill + WA; tracked magazines spend rounds when fired and reload from matching ammunition in inventory. The GM confirms hits; damage is never applied automatically.</p>
+  </div>`;
+  const netSpacePanel = `<div class="sheet-action-panel" id="net-space-actions" ${sheetActionTab === "net" ? "" : "hidden"}>
+    <div class="sheet-roll-settings"><label><span>Target</span><input class="input-control" id="net-roll-target" type="number" value="${escapeHtml(sheetRollTarget)}"></label><label><span>Modifier</span><input class="input-control" id="net-roll-modifier" type="number" value="${escapeHtml(sheetRollModifier)}"></label></div>
+    <article class="sheet-attack-action net-action-card"><div class="sheet-attack-title"><strong>Interface check</strong><small>1d10 + TECH + Interface + modifier vs target</small></div><div class="sheet-attack-roll"><button class="button button-primary" type="button" data-action="sheet-net-roll" data-character-id="${escapeHtml(character.id)}">Roll Interface</button></div><span class="sheet-attack-bonus">TECH ${escapeHtml(effectiveAttributes.TECH)} + Interface ${interfaceSkillValue}</span><span class="sheet-attack-damage">NET</span></article>
+    <p class="field-hint">Use this check for table-defined Net Space actions. Your game master sets the architecture, action costs, and outcomes.</p>
+  </div>`;
+  return `<section class="panel sheet-actions-panel"><div class="panel-head"><div><p class="section-kicker">ACTIONS</p><h2>Character actions</h2></div></div><div class="panel-body">
+    <div class="sheet-action-tabs" role="tablist" aria-label="Character action space"><button class="sheet-action-tab ${sheetActionTab === "real" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetActionTab === "real"}" data-sheet-action-tab="real">Real Space</button><button class="sheet-action-tab ${sheetActionTab === "net" ? "active" : ""}" type="button" role="tab" aria-selected="${sheetActionTab === "net"}" data-sheet-action-tab="net">Net Space</button></div>
+    ${realSpacePanel}${netSpacePanel}
   </div></section>`;
 }
 
@@ -1106,7 +1130,7 @@ function renderPalette() {
     return;
   }
   if (boardTab === "terrain") {
-    target.innerHTML = `<p class="palette-intro">Original scale props. Each tile covers 2 × 2 m.</p>${TERRAIN_TEMPLATES.map((item, index) => `<button class="palette-card terrain-card" type="button" draggable="true" data-palette-kind="terrain" data-palette-index="${index}" aria-label="Drag or add ${escapeHtml(item.name)}, ${item.widthMeters} by ${item.heightMeters} meters"><span class="palette-swatch" style="--piece-color:${item.color}"></span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.widthMeters} × ${item.heightMeters} m</small></span><span class="palette-add">＋</span></button>`).join("")}<p class="field-hint">Drag a prop onto the grid or tap + to place it.</p>`;
+    target.innerHTML = `<p class="palette-intro">Original scale props. Placement rounds their dimensions up to whole squares at the current board scale.</p>${TERRAIN_TEMPLATES.map((item, index) => `<button class="palette-card terrain-card" type="button" draggable="true" data-palette-kind="terrain" data-palette-index="${index}" aria-label="Drag or add ${escapeHtml(item.name)}, ${item.widthMeters} by ${item.heightMeters} meters"><span class="palette-swatch" style="--piece-color:${item.color}"></span><span class="palette-card-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.widthMeters} × ${item.heightMeters} m</small></span><span class="palette-add">＋</span></button>`).join("")}<p class="field-hint">Drag a prop onto the grid or tap + to place it.</p>`;
     return;
   }
   target.innerHTML = enemyTemplates.length
@@ -1199,6 +1223,8 @@ function renderBoardSide() {
 }
 
 function renderBoard() {
+  const preset = boardPresetFor(boardState.presetId);
+  const { columns, rows, metersPerSquare } = preset;
   const campaign = workspace.campaigns.find(item => item.id === activeBoardCampaignId);
   const campaignName = campaign?.name || activeBoardCampaignName || "Shared campaign";
   const nameNode = document.getElementById("board-campaign-name");
@@ -1207,27 +1233,81 @@ function renderBoard() {
   const connectButton = document.getElementById("board-connect");
   const gmControls = document.getElementById("board-gm-controls");
   if (!nameNode || !codeNode || !statusNode || !connectButton) return;
+  document.getElementById("board-metric-summary").textContent =
+    `${columns} x ${rows} SQUARES · ${columns * metersPerSquare} x ${rows * metersPerSquare} METERS · ${metersPerSquare} M / SQUARE`;
   nameNode.textContent = `${campaignName} · ${activeBoardCampaignId ? "Room " + activeBoardCampaignId : "No room selected"}`;
   codeNode.textContent = activeBoardCampaignId || "—";
   statusNode.classList.toggle("connected", connectionStatus === "LIVE");
   statusNode.innerHTML = `<span class="connection-dot"></span> ${escapeHtml(connectionStatus)}`;
   connectButton.textContent = connectionStatus === "LIVE" ? "Reconnect" : connectionStatus === "CONNECTING" ? "Connecting…" : "Connect to campaign";
   gmControls.hidden = !boardIsGm;
+  const presetControl = document.getElementById("board-preset-control");
+  presetControl.hidden = !boardIsGm;
+  const presetSelect = document.getElementById("board-preset");
+  const presetOptions = boardState.presetId === LEGACY_BOARD_PRESET_ID
+    ? [...BOARD_PRESETS, LEGACY_BOARD_PRESET]
+    : BOARD_PRESETS;
+  presetSelect.innerHTML = presetOptions.map(item => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+  presetSelect.value = preset.id;
   document.querySelector(".board-instructions [data-action=\"remove-board-piece\"]")?.toggleAttribute("hidden", !boardIsGm);
   document.querySelector(".gm-key-entry")?.toggleAttribute("hidden", boardIsGm);
+  document.querySelectorAll("[data-board-space]").forEach(button => {
+    const active = button.dataset.boardSpace === boardSpace;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  document.getElementById("real-space-panel").hidden = boardSpace !== "real";
+  document.getElementById("net-space-board-panel").hidden = boardSpace !== "net";
+  document.querySelector(".board-layout")?.classList.toggle("board-layout-net-space", boardSpace === "net");
+  document.querySelector(".board-palette").hidden = boardSpace === "net";
+  document.querySelector(".board-sidebar").hidden = boardSpace === "net";
   renderPalette();
   const topRuler = document.getElementById("board-ruler-top");
   const leftRuler = document.getElementById("board-ruler-left");
+  const rightRuler = document.getElementById("board-ruler-right");
+  const bottomRuler = document.getElementById("board-ruler-bottom");
   const grid = document.getElementById("board-grid");
-  if (!topRuler || !leftRuler || !grid) return;
+  if (!topRuler || !leftRuler || !rightRuler || !bottomRuler || !grid) return;
   const canvas = document.getElementById("board-canvas");
   canvas?.style.setProperty("--board-cell", `${boardZoom}px`);
+  canvas?.style.setProperty("--board-columns", columns);
+  canvas?.style.setProperty("--board-rows", rows);
+  grid.style.setProperty("--board-columns", columns);
+  grid.style.setProperty("--board-rows", rows);
+  const netGrid = document.getElementById("net-grid");
+  netGrid?.style.setProperty("--net-cell", `${netBoardZoom}px`);
   const zoomControl = document.getElementById("board-zoom");
   const zoomValue = document.getElementById("board-zoom-value");
   if (zoomControl) zoomControl.value = String(boardZoom);
   if (zoomValue) zoomValue.value = `${boardZoom} px`;
-  topRuler.innerHTML = Array.from({ length: BOARD_COLUMNS / BOARD_RULER_INTERVAL + 1 }, (_, index) => `<span>${index * BOARD_RULER_INTERVAL * 2}</span>`).join("");
-  leftRuler.innerHTML = Array.from({ length: BOARD_ROWS / BOARD_RULER_INTERVAL + 1 }, (_, index) => `<span>${index * BOARD_RULER_INTERVAL * 2}</span>`).join("");
+  const netZoomControl = document.getElementById("net-board-zoom");
+  const netZoomValue = document.getElementById("net-board-zoom-value");
+  if (netZoomControl) netZoomControl.value = String(netBoardZoom);
+  if (netZoomValue) netZoomValue.value = `${netBoardZoom} px`;
+  netGrid.innerHTML = Array.from({ length: 100 }, (_, index) => {
+    const row = String.fromCharCode(65 + Math.floor(index / 10));
+    const column = (index % 10) + 1;
+    const cell = `${row}${column}`;
+    return `<button class="net-grid-cell ${selectedNetGridCell === cell ? "selected" : ""}" type="button" role="gridcell" data-net-cell="${cell}" aria-label="Net Space cell ${cell}" aria-pressed="${selectedNetGridCell === cell}" title="${cell}">${cell}</button>`;
+  }).join("");
+  document.getElementById("net-grid-selection").textContent = `Selected cell: ${selectedNetGridCell}`;
+  const rulerInterval = Math.ceil(Math.max(columns, rows) / 6);
+  const rulerMarks = size => {
+    const marks = Array.from({ length: Math.floor(size / rulerInterval) + 1 }, (_, index) => index * rulerInterval);
+    if (marks.at(-1) !== size) marks.push(size);
+    return marks;
+  };
+  topRuler.style.setProperty("--board-columns", columns);
+  bottomRuler.style.setProperty("--board-columns", columns);
+  leftRuler.style.setProperty("--board-rows", rows);
+  rightRuler.style.setProperty("--board-rows", rows);
+  const horizontalMarks = rulerMarks(columns).map(cell => `<span data-ruler-column="${cell}" style="left:${cell * boardZoom}px">${cell * metersPerSquare}</span>`).join("");
+  const verticalMarks = rulerMarks(rows).map(cell => `<span data-ruler-row="${cell}" style="top:${cell * boardZoom}px">${cell * metersPerSquare}</span>`).join("");
+  topRuler.innerHTML = horizontalMarks;
+  bottomRuler.innerHTML = horizontalMarks;
+  leftRuler.innerHTML = verticalMarks;
+  rightRuler.innerHTML = verticalMarks;
+  grid.setAttribute("aria-label", `Tactical grid, ${columns} columns by ${rows} rows, ${metersPerSquare} meters per square`);
   const pieces = [
     ...boardState.terrain.map(piece => ({ ...piece, renderKind: "terrain" })),
     ...boardState.tokens.map(piece => ({ ...piece, renderKind: "token" }))
@@ -1237,7 +1317,7 @@ function renderBoard() {
     const canSeeStats = boardIsGm || ownCharacter;
     const canMove = boardIsGm || ownCharacter;
     const damage = canSeeStats ? `<span class="piece-damage">${escapeHtml(piece.health?.current ?? 0)}</span>` : "";
-    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * 2} by ${piece.height * 2} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `${piece.portraitUrl ? `<img class="piece-portrait" src="${escapeHtml(piece.portraitUrl)}" alt="">` : `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span>`}<span class="piece-label">${escapeHtml(piece.name)}</span>${damage}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
+    return `<button class="board-piece ${piece.renderKind === "token" ? `board-token ${piece.kind === "enemy" ? "enemy-token" : "character-token"}` : "terrain-piece"} ${piece.id === selectedBoardPieceId ? "piece-selected" : ""}" type="button" draggable="${canMove}" role="gridcell" data-piece-id="${escapeHtml(piece.id)}" data-piece-kind="${piece.renderKind}" aria-label="${escapeHtml(piece.name)}, ${piece.width * metersPerSquare} by ${piece.height * metersPerSquare} meters" style="grid-column:${piece.x + 1}/span ${piece.width};grid-row:${piece.y + 1}/span ${piece.height};${piece.renderKind === "terrain" ? `--piece-color:${escapeHtml(piece.color)}` : ""}">${piece.renderKind === "token" ? `${piece.portraitUrl ? `<img class="piece-portrait" src="${escapeHtml(piece.portraitUrl)}" alt="">` : `<span class="piece-initials">${escapeHtml(initials(piece.name))}</span>`}<span class="piece-label">${escapeHtml(piece.name)}</span>${damage}` : `<span class="piece-label">${escapeHtml(piece.name)}</span>`}</button>`;
   }).join("");
   renderBoardSide();
 }
@@ -1246,10 +1326,118 @@ function boardPositionFromEvent(event) {
   const grid = document.getElementById("board-grid");
   const rect = grid.getBoundingClientRect();
   const cellSize = Number.parseFloat(getComputedStyle(grid).getPropertyValue("--board-cell")) || BOARD_CELL_SIZE;
+  const { columns, rows } = boardPresetFor(boardState.presetId);
   return {
-    x: Math.max(0, Math.min(BOARD_COLUMNS - 1, Math.floor((event.clientX - rect.left) / cellSize))),
-    y: Math.max(0, Math.min(BOARD_ROWS - 1, Math.floor((event.clientY - rect.top) / cellSize)))
+    x: Math.max(0, Math.min(columns - 1, Math.floor((event.clientX - rect.left) / cellSize))),
+    y: Math.max(0, Math.min(rows - 1, Math.floor((event.clientY - rect.top) / cellSize)))
   };
+}
+
+function removeBoardPiece(pieceId, pieceKind) {
+  if (!boardIsGm) return showToast("Only the GM can remove pieces from the shared board.", true);
+  if (!pieceId) return showToast("Select a piece on the board first.", true);
+  if (!confirmAction("Remove the selected piece from the shared board?")) return;
+  if (pieceKind === "terrain") boardState.terrain = boardState.terrain.filter(piece => piece.id !== pieceId);
+  else {
+    boardState.tokens = boardState.tokens.filter(piece => piece.id !== pieceId);
+    if (selectedBoardTokenId === pieceId) selectedBoardTokenId = "";
+  }
+  selectedBoardPieceId = "";
+  selectedBoardPieceKind = "";
+  document.getElementById("board-context-menu").hidden = true;
+  sendBoardUpdate();
+  renderBoard();
+}
+
+function changeBoardPreset(presetId) {
+  if (!boardIsGm) return showToast("Only the GM can change the shared board size and scale.", true);
+  if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || connectionStatus !== "LIVE") {
+    renderBoard();
+    return showToast("Connect to the campaign room before changing its board size.", true);
+  }
+  const preset = [...BOARD_PRESETS, LEGACY_BOARD_PRESET].find(item => item.id === presetId);
+  if (!preset) {
+    renderBoard();
+    return showToast("Choose a supported board preset.", true);
+  }
+  const currentPreset = boardPresetFor(boardState.presetId);
+  if (preset.id === currentPreset.id) return;
+  boardState = {
+    ...boardState,
+    presetId: preset.id,
+    tokens: boardState.tokens.map(piece => rescaleBoardPiece(piece, currentPreset, preset)),
+    terrain: boardState.terrain.map(piece => rescaleBoardPiece(piece, currentPreset, preset))
+  };
+  sendBoardUpdate();
+  renderBoard();
+}
+
+function updateBoardZoom(space, value) {
+  const zoom = Math.max(12, Math.min(48, Math.round(Number(value) / 2) * 2));
+  if (space === "net") {
+    netBoardZoom = zoom;
+    document.getElementById("net-grid")?.style.setProperty("--net-cell", `${zoom}px`);
+    const control = document.getElementById("net-board-zoom");
+    const output = document.getElementById("net-board-zoom-value");
+    if (control) control.value = String(zoom);
+    if (output) output.value = `${zoom} px`;
+    return;
+  }
+  boardZoom = zoom;
+  document.getElementById("board-canvas")?.style.setProperty("--board-cell", `${zoom}px`);
+  document.querySelectorAll("[data-ruler-column]").forEach(mark => {
+    mark.style.left = `${Number(mark.dataset.rulerColumn) * zoom}px`;
+  });
+  document.querySelectorAll("[data-ruler-row]").forEach(mark => {
+    mark.style.top = `${Number(mark.dataset.rulerRow) * zoom}px`;
+  });
+  const control = document.getElementById("board-zoom");
+  const output = document.getElementById("board-zoom-value");
+  if (control) control.value = String(zoom);
+  if (output) output.value = `${zoom} px`;
+}
+
+function zoomFromWheel(event, space) {
+  if (event.deltaY === 0) return;
+  event.preventDefault();
+  const currentZoom = space === "net" ? netBoardZoom : boardZoom;
+  const nextZoom = Math.max(12, Math.min(48, currentZoom + (event.deltaY < 0 ? 2 : -2)));
+  if (nextZoom === currentZoom) return;
+  const grid = document.getElementById(space === "net" ? "net-grid" : "board-grid");
+  const scroll = document.getElementById(space === "net" ? "net-grid-scroll" : "board-scroll");
+  const before = grid.getBoundingClientRect();
+  const preset = space === "net" ? null : boardPresetFor(boardState.presetId);
+  const anchorPosition = (coordinate, origin, isHorizontal) => {
+    const position = coordinate - origin;
+    if (space !== "net") {
+      const boardSize = isHorizontal ? preset.columns : preset.rows;
+      return Math.max(0, Math.min(boardSize * currentZoom, position)) * nextZoom / currentZoom;
+    }
+    const boardSize = 10;
+    const border = 1;
+    const gap = 1;
+    const gridPosition = Math.max(0, Math.min(boardSize * currentZoom + (boardSize - 1) * gap, position - border));
+    const cellIndex = Math.min(boardSize - 1, Math.floor(gridPosition / (currentZoom + gap)));
+    const withinTrack = gridPosition - cellIndex * (currentZoom + gap);
+    const withinCell = withinTrack <= currentZoom
+      ? withinTrack * nextZoom / currentZoom
+      : nextZoom + withinTrack - currentZoom;
+    return border + cellIndex * (nextZoom + gap) + withinCell;
+  };
+  const anchorX = anchorPosition(event.clientX, before.left, true) - (event.clientX - before.left);
+  const anchorY = anchorPosition(event.clientY, before.top, false) - (event.clientY - before.top);
+  updateBoardZoom(space, nextZoom);
+  const after = grid.getBoundingClientRect();
+  const panSurface = document.getElementById(space === "net" ? "net-grid" : "board-canvas");
+  const adjustAxis = (scrollProperty, panProperty, desiredDelta) => {
+    const previousScroll = scroll[scrollProperty];
+    scroll[scrollProperty] = previousScroll + desiredDelta;
+    const appliedScroll = scroll[scrollProperty] - previousScroll;
+    const previousPan = Number.parseFloat(panSurface.style.getPropertyValue(panProperty)) || 0;
+    panSurface.style.setProperty(panProperty, `${previousPan + appliedScroll - desiredDelta}px`);
+  };
+  adjustAxis("scrollLeft", space === "net" ? "--net-grid-pan-x" : "--board-canvas-pan-x", after.left - before.left + anchorX);
+  adjustAxis("scrollTop", space === "net" ? "--net-grid-pan-y" : "--board-canvas-pan-y", after.top - before.top + anchorY);
 }
 
 function sendBoardUpdate() {
@@ -1263,6 +1451,7 @@ function sendBoardUpdate() {
 
 function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
   if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || connectionStatus !== "LIVE") return showToast("Connect to the campaign room before adding board pieces.", true);
+  const preset = boardPresetFor(boardState.presetId);
   if (kind === "character") {
     if (!boardIsGm) return showToast("Only the GM can place campaign characters.", true);
     const character = campaignRoster[index];
@@ -1270,7 +1459,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
     if (boardState.tokens.some(token => token.characterId === character.id)) return showToast("That character is already on the board.");
     const token = {
       id: makeId(), kind: "character", name: character.name, role: character.role || "Character",
-      x: Math.min(position.x, BOARD_COLUMNS - 1), y: Math.min(position.y, BOARD_ROWS - 1),
+      x: Math.min(position.x, preset.columns - 1), y: Math.min(position.y, preset.rows - 1),
       width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...new Set([...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)])],
       health: { current: character.healthCurrent ?? 0 },
       initiative: 0, characterId: character.id, ownerUserId: character.ownerUserId, portraitUrl: character.portraitUrl || ""
@@ -1291,7 +1480,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
     const height = Math.min(10, Math.max(1, Number(npc.boardHeight) || 1));
     const token = {
       id: makeId(), kind: "enemy", name: npc.name, role: npc.role || "NPC",
-      x: Math.min(position.x, BOARD_COLUMNS - width), y: Math.min(position.y, BOARD_ROWS - height),
+      x: Math.min(position.x, preset.columns - width), y: Math.min(position.y, preset.rows - height),
       width, height, attributes: effectiveAttributesFor(npc, itemsForCharacter(npc)),
       skills: (npc.skills || []).map(normalizeSkill),
       gear: [...new Set([...(npc.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === npc.id).map(item => item.name)])],
@@ -1310,10 +1499,12 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
   if (kind === "terrain") {
     const template = TERRAIN_TEMPLATES[index];
     if (!template) return;
+    const width = Math.min(preset.columns, Math.ceil(template.widthMeters / preset.metersPerSquare));
+    const height = Math.min(preset.rows, Math.ceil(template.heightMeters / preset.metersPerSquare));
     boardState.terrain.push({
-      id: makeId(), name: template.name, x: Math.min(position.x, BOARD_COLUMNS - Math.ceil(template.widthMeters / 2)),
-      y: Math.min(position.y, BOARD_ROWS - Math.ceil(template.heightMeters / 2)),
-      width: Math.ceil(template.widthMeters / 2), height: Math.ceil(template.heightMeters / 2), color: template.color
+      id: makeId(), name: template.name, x: Math.min(position.x, preset.columns - width),
+      y: Math.min(position.y, preset.rows - height),
+      width, height, color: template.color
     });
     selectedBoardPieceId = boardState.terrain.at(-1).id;
     selectedBoardPieceKind = "terrain";
@@ -1322,7 +1513,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
     if (!template) return;
     const token = {
       id: makeId(), kind: "enemy", name: template.name, role: template.role,
-      x: Math.min(position.x, BOARD_COLUMNS - 1), y: Math.min(position.y, BOARD_ROWS - 1),
+      x: Math.min(position.x, preset.columns - 1), y: Math.min(position.y, preset.rows - 1),
       width: 1, height: 1, attributes: template.attributes, gear: template.gear,
       health: template.health, initiative: 0, characterId: ""
     };
@@ -1338,6 +1529,7 @@ function addBoardPiece(kind, index, position = { x: 0, y: 0 }) {
 function addCharacterToken(characterId) {
   if (!boardIsGm) return showToast("The GM places campaign character tokens from the Party tab.", true);
   const character = selectedCharacter(characterId);
+  const preset = boardPresetFor(boardState.presetId);
   if (!character) return;
   const existing = boardState.tokens.find(token => token.characterId === character.id);
   if (existing) {
@@ -1347,8 +1539,8 @@ function addCharacterToken(characterId) {
   }
   const token = {
     id: makeId(), kind: "character", name: character.name, role: character.role || "Character",
-    x: Math.min(boardState.tokens.length % BOARD_COLUMNS, BOARD_COLUMNS - 1),
-    y: Math.min(Math.floor(boardState.tokens.length / BOARD_COLUMNS) % BOARD_ROWS, BOARD_ROWS - 1),
+    x: Math.min(boardState.tokens.length % preset.columns, preset.columns - 1),
+    y: Math.min(Math.floor(boardState.tokens.length / preset.columns) % preset.rows, preset.rows - 1),
     width: 1, height: 1, attributes: effectiveAttributesFor(character, itemsForCharacter(character)), gear: [...(character.inventory || []).map(item => item.name), ...workspace.gear.filter(item => item.characterId === character.id).map(item => item.name)],
     health: { current: character.healthCurrent ?? 0 }, initiative: 0, characterId: character.id, ownerUserId: signedInAccount?.id || "", portraitUrl: character.portraitUrl || ""
   };
@@ -1376,11 +1568,12 @@ function updateBoardPosition(event) {
     return;
   }
   if (dragged.source === "board") {
+    const preset = boardPresetFor(boardState.presetId);
     const collection = dragged.kind === "token" ? boardState.tokens : boardState.terrain;
     const piece = collection.find(item => item.id === dragged.id);
     if (!piece) return;
-    piece.x = Math.min(position.x, BOARD_COLUMNS - piece.width);
-    piece.y = Math.min(position.y, BOARD_ROWS - piece.height);
+    piece.x = Math.min(position.x, preset.columns - piece.width);
+    piece.y = Math.min(position.y, preset.rows - piece.height);
     selectedBoardPieceId = piece.id;
     selectedBoardPieceKind = dragged.kind;
     sendBoardUpdate();
@@ -1447,10 +1640,14 @@ function performSheetSkillRoll(characterId, requestedSkill = "", requestedAttrib
   const skill = (character.skills || []).map(normalizeSkill).find(item => item.name.toLowerCase() === skillName.toLowerCase());
   const chipBonus = skillChipBonusFor(character, skillName);
   const naturalSkillValue = skill?.value || 0;
-  const skillValue = Number(skillOption?.dataset.skillValue ?? (naturalSkillValue + chipBonus));
+  const selectedSkillValue = skillOption?.value.toLowerCase() === skillName.toLowerCase()
+    ? Number(skillOption.dataset.skillValue)
+    : naturalSkillValue + chipBonus;
+  const skillValue = Number.isFinite(selectedSkillValue) ? selectedSkillValue : naturalSkillValue + chipBonus;
   const attribute = requestedAttribute || document.getElementById("sheet-skill-attribute")?.value || attributeForSkill(skillName);
-  const modifier = Number(document.getElementById("sheet-roll-modifier")?.value ?? sheetRollModifier);
-  const target = Number(document.getElementById("sheet-roll-target")?.value ?? sheetRollTarget);
+  const settingsPrefix = requestedAttribute === "TECH" && requestedSkill.toLowerCase() === "interface" ? "net-roll" : "sheet-roll";
+  const modifier = Number(document.getElementById(`${settingsPrefix}-modifier`)?.value ?? sheetRollModifier);
+  const target = Number(document.getElementById(`${settingsPrefix}-target`)?.value ?? sheetRollTarget);
   if (!Number.isFinite(target) || !Number.isFinite(modifier)) return showToast("Enter a valid target and modifier.", true);
   const base = attribute === "EMP" ? currentEmpathyFor(character) : effectiveAttributesFor(character, itemsForCharacter(character))[attribute];
   const die = rollD10();
@@ -1676,7 +1873,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
   activeGmKey = gmKey;
   boardIsGm = false;
   enemyTemplates = [];
-  boardState = { tokens: [], terrain: [] };
+  boardState = emptyBoardState();
   roomEvents = [];
   selectedBoardTokenId = "";
   selectedBoardPieceId = "";
@@ -1712,7 +1909,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
     }
     if (message.type === "room-state") {
       activeBoardCampaignName = message.room.name;
-      boardState = message.room.board || { tokens: [], terrain: [] };
+      boardState = message.room.board || emptyBoardState();
       roomEvents = message.room.events || [];
       const localCampaign = workspace.campaigns.find(item => item.id === campaignId);
       if (!localCampaign) {
@@ -1751,7 +1948,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
       return;
     }
     if (message.type === "board-state") {
-      boardState = message.board || { tokens: [], terrain: [] };
+      boardState = message.board || emptyBoardState();
       if (!boardState.tokens.some(item => item.id === selectedBoardTokenId)) selectedBoardTokenId = boardState.tokens[0]?.id || "";
       renderBoard();
       return;
@@ -1782,7 +1979,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
     connectionStatus = "OFFLINE";
     boardIsGm = false;
     enemyTemplates = [];
-    boardState = { tokens: [], terrain: [] };
+    boardState = emptyBoardState();
     roomEvents = [];
     selectedBoardTokenId = "";
     selectedBoardPieceId = "";
@@ -1794,7 +1991,7 @@ function connectToCampaign(campaignId, campaignName, userName, gmKey = "") {
       connectionStatus = "OFFLINE";
       boardIsGm = false;
       enemyTemplates = [];
-      boardState = { tokens: [], terrain: [] };
+      boardState = emptyBoardState();
       roomEvents = [];
       selectedBoardTokenId = "";
       selectedBoardPieceId = "";
@@ -2282,7 +2479,7 @@ function openCharacterForm(character, npcMode = Boolean(character?.isNpc)) {
     <input type="hidden" name="attributeRolls" value="">
     <div class="attribute-points-status form-field full" id="attribute-points-status" aria-live="polite"></div>`;
   const skillFields = formCharacter ? characterSkillPicker(formCharacter) : startingSkillPicker();
-  const boardFootprintFields = npcMode ? `<div class="form-grid form-field full"><div><span class="field-label">Board footprint</span><span class="field-hint">Each square is 2 × 2 m. Set both dimensions to 2 for a 2 × 2 unit such as a mech.</span></div>${field("Width (squares)", "boardWidth", formCharacter?.boardWidth ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}${field("Height (squares)", "boardHeight", formCharacter?.boardHeight ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}</div>` : "";
+  const boardFootprintFields = npcMode ? `<div class="form-grid form-field full"><div><span class="field-label">Board footprint</span><span class="field-hint">Footprints are measured in grid squares; the active campaign scale determines their meter size.</span></div>${field("Width (squares)", "boardWidth", formCharacter?.boardWidth ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}${field("Height (squares)", "boardHeight", formCharacter?.boardHeight ?? 1, { type: "number", min: 1, max: 10, step: 1, required: true })}</div>` : "";
   const body = `${field(npcMode ? "NPC name" : "Character name", "name", formCharacter?.name ?? "", { required: true })}${field("Role / class", "role", formCharacter?.role ?? "")}
     ${field("Handle / callsign", "handle", formCharacter?.handle ?? "")}${attributeCreation}<div class="form-field full"><span class="field-label">Attributes</span><div class="attributes-form">${attrs}</div></div>${boardFootprintFields}
     ${skillFields}
@@ -3636,6 +3833,7 @@ function handleAction(button) {
   if (action === "toggle-equipped") void toggleItemEquipped(button.dataset.characterId, id);
   if (action === "toggle-socketed") void toggleSkillChipSocketed(button.dataset.characterId, id);
   if (action === "sheet-skill-roll") performSheetSkillRoll(button.dataset.characterId, button.dataset.skillName, button.dataset.attribute);
+  if (action === "sheet-net-roll") performSheetSkillRoll(button.dataset.characterId, "Interface", "TECH");
   if (action === "sheet-attribute-roll") performSheetAttributeRoll(button.dataset.characterId, button.dataset.attribute);
   if (action === "sheet-initiative-roll") performSheetInitiativeRoll(button.dataset.characterId);
   if (action === "sheet-attack-roll") void performSheetAttackRoll(button);
@@ -3664,18 +3862,9 @@ function handleAction(button) {
   }
   if (action === "adjust-damage") adjustSelectedDamage(Number(button.dataset.delta));
   if (action === "remove-board-piece") {
-    if (!selectedBoardPieceId) return showToast("Select a piece on the board first.", true);
-    if (!confirmAction("Remove the selected piece from the shared board?")) return;
-    if (selectedBoardPieceKind === "terrain") boardState.terrain = boardState.terrain.filter(piece => piece.id !== selectedBoardPieceId);
-    else {
-      boardState.tokens = boardState.tokens.filter(piece => piece.id !== selectedBoardPieceId);
-      if (selectedBoardTokenId === selectedBoardPieceId) selectedBoardTokenId = "";
-    }
-    selectedBoardPieceId = "";
-    selectedBoardPieceKind = "";
-    sendBoardUpdate();
-    renderBoard();
+    removeBoardPiece(selectedBoardPieceId, selectedBoardPieceKind);
   }
+  if (action === "remove-context-piece") removeBoardPiece(selectedBoardPieceId, selectedBoardPieceKind);
   if (action === "clear-demo") {
     if (!confirmAction("Clear the demo characters, campaign, sessions, and gear? This cannot be undone.")) return;
     workspace = { demo: false, characters: [], campaigns: [], gear: [], activity: [] };
@@ -3779,6 +3968,7 @@ function handleAction(button) {
 }
 
 document.addEventListener("click", event => {
+  if (!event.target.closest("#board-context-menu")) document.getElementById("board-context-menu").hidden = true;
   const friendTabButton = event.target.closest("[data-friend-tab]");
   if (friendTabButton) {
     friendTab = friendTabButton.dataset.friendTab;
@@ -3820,6 +4010,12 @@ document.addEventListener("click", event => {
     renderSheet();
     return;
   }
+  const sheetActionSection = event.target.closest("[data-sheet-action-tab]");
+  if (sheetActionSection) {
+    sheetActionTab = sheetActionSection.dataset.sheetActionTab;
+    renderSheet();
+    return;
+  }
   const inventorySection = event.target.closest("[data-inventory-tab]");
   if (inventorySection) {
     inventoryTab = inventorySection.dataset.inventoryTab;
@@ -3836,6 +4032,18 @@ document.addEventListener("click", event => {
   if (boardTabButton) {
     boardTab = boardTabButton.dataset.boardTab;
     renderPalette();
+    return;
+  }
+  const boardSpaceButton = event.target.closest("[data-board-space]");
+  if (boardSpaceButton) {
+    boardSpace = boardSpaceButton.dataset.boardSpace;
+    renderBoard();
+    return;
+  }
+  const netGridCell = event.target.closest("[data-net-cell]");
+  if (netGridCell) {
+    selectedNetGridCell = netGridCell.dataset.netCell;
+    renderBoard();
     return;
   }
   const paletteItem = event.target.closest("[data-palette-kind]");
@@ -3924,12 +4132,16 @@ document.getElementById("board-connect").addEventListener("click", () => connect
   document.getElementById("board-gm-key").value.trim()
 ));
 document.getElementById("board-zoom").addEventListener("input", event => {
-  boardZoom = Number(event.target.value);
-  const canvas = document.getElementById("board-canvas");
-  canvas?.style.setProperty("--board-cell", `${boardZoom}px`);
-  document.getElementById("board-zoom-value").value = `${boardZoom} px`;
+  updateBoardZoom("real", event.target.value);
+});
+document.getElementById("net-board-zoom").addEventListener("input", event => {
+  updateBoardZoom("net", event.target.value);
 });
 document.addEventListener("change", event => {
+  if (event.target.id === "board-preset") {
+    changeBoardPreset(event.target.value);
+    return;
+  }
   const authForm = event.target.closest('form[name="auth-form"]');
   if (authForm && event.target.name === "showPassword") {
     const type = event.target.checked ? "text" : "password";
@@ -3995,6 +4207,8 @@ document.addEventListener("input", event => {
   if (event.target.id === "roll-modifier" && Number.isFinite(Number(event.target.value))) boardRollModifier = Number(event.target.value);
   if (event.target.id === "sheet-roll-target" && Number.isFinite(Number(event.target.value))) sheetRollTarget = Number(event.target.value);
   if (event.target.id === "sheet-roll-modifier" && Number.isFinite(Number(event.target.value))) sheetRollModifier = Number(event.target.value);
+  if (event.target.id === "net-roll-target" && Number.isFinite(Number(event.target.value))) sheetRollTarget = Number(event.target.value);
+  if (event.target.id === "net-roll-modifier" && Number.isFinite(Number(event.target.value))) sheetRollModifier = Number(event.target.value);
 });
 document.addEventListener("dragstart", event => {
   const palette = event.target.closest("[data-palette-kind]");
@@ -4012,6 +4226,53 @@ document.getElementById("board-grid").addEventListener("drop", event => {
   event.preventDefault();
   updateBoardPosition(event);
 });
+const boardGrid = document.getElementById("board-grid");
+const boardScroll = document.getElementById("board-scroll");
+boardGrid.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || event.target !== boardGrid) return;
+  boardPanStart = {
+    pointerId: event.pointerId,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    scrollLeft: boardScroll.scrollLeft,
+    scrollTop: boardScroll.scrollTop
+  };
+  event.preventDefault();
+  boardGrid.setPointerCapture(event.pointerId);
+});
+boardGrid.addEventListener("pointermove", event => {
+  if (!boardPanStart || event.pointerId !== boardPanStart.pointerId) return;
+  const deltaX = event.clientX - boardPanStart.clientX;
+  const deltaY = event.clientY - boardPanStart.clientY;
+  if (Math.abs(deltaX) < 3 && Math.abs(deltaY) < 3) return;
+  boardGrid.classList.add("panning-active");
+  boardScroll.scrollLeft = boardPanStart.scrollLeft - deltaX;
+  boardScroll.scrollTop = boardPanStart.scrollTop - deltaY;
+});
+const finishBoardPan = event => {
+  if (!boardPanStart || event.pointerId !== boardPanStart.pointerId) return;
+  boardPanStart = null;
+  boardGrid.classList.remove("panning-active");
+  if (boardGrid.hasPointerCapture(event.pointerId)) boardGrid.releasePointerCapture(event.pointerId);
+};
+boardGrid.addEventListener("pointerup", finishBoardPan);
+boardGrid.addEventListener("pointercancel", finishBoardPan);
+document.getElementById("board-grid").addEventListener("contextmenu", event => {
+  const piece = event.target.closest("[data-piece-id][data-piece-kind]");
+  if (!piece || !boardIsGm) return;
+  event.preventDefault();
+  selectedBoardPieceId = piece.dataset.pieceId;
+  selectedBoardPieceKind = piece.dataset.pieceKind;
+  if (selectedBoardPieceKind === "token") selectedBoardTokenId = selectedBoardPieceId;
+  renderBoard();
+  const menu = document.getElementById("board-context-menu");
+  menu.hidden = false;
+  menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8))}px`;
+  menu.querySelector("[role=\"menuitem\"]").focus();
+});
+document.getElementById("board-scroll").addEventListener("wheel", event => zoomFromWheel(event, "real"), { passive: false });
+document.getElementById("net-grid-scroll").addEventListener("wheel", event => zoomFromWheel(event, "net"), { passive: false });
 dialog.addEventListener("click", event => {
   if (event.target === dialog) dialog.close();
 });

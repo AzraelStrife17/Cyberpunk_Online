@@ -78,7 +78,7 @@
 
           <section class="view-panel" id="view-board" aria-labelledby="board-title" hidden>
             <div class="page-heading board-page-heading">
-              <div><p class="eyebrow">SHARED TABLE · 1000 × 1000 METERS · 2 METERS PER SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
+              <div><p class="eyebrow" id="board-metric-summary">24 x 36 SQUARES · 48 x 72 METERS · 2 M / SQUARE</p><h1 id="board-title">Tactical board<span class="heading-period">.</span></h1><p class="page-subtitle" id="board-campaign-name">Connect to a campaign to start the board.</p></div>
               <div class="board-heading-actions"><button class="button" type="button" data-view-link="campaigns">Back to campaigns</button><span class="connection-pill" id="board-connection-status"><span class="connection-dot"></span> OFFLINE</span><button class="button" type="button" data-action="copy-room-code">Copy room code</button></div>
             </div>
             <div class="board-connect-bar">
@@ -100,14 +100,31 @@
                 <div id="board-palette-content"></div>
               </aside>
               <div class="board-center">
-                <div class="board-instructions"><span class="live-dot"></span><span>Drag pieces onto the grid or tap “Add”. Move placed pieces to update the shared board.</span><label class="board-zoom-control" for="board-zoom">ZOOM <input id="board-zoom" type="range" min="12" max="48" step="2" value="32"><output id="board-zoom-value" for="board-zoom">32 px</output></label><button class="icon-button" type="button" data-action="remove-board-piece" aria-label="Remove selected board piece" title="Remove selected piece">×</button></div>
-                <div class="board-scroll">
-                  <div class="board-canvas" id="board-canvas">
-                    <div class="ruler-corner" aria-hidden="true">m</div>
-                    <div class="board-ruler-top" id="board-ruler-top" aria-label="Horizontal ruler in meters"></div>
-                    <div class="board-ruler-left" id="board-ruler-left" aria-label="Vertical ruler in meters"></div>
-                    <div class="board-grid" id="board-grid" role="grid" aria-label="Tactical grid, each square represents two meters"></div>
+                <div class="board-space-tabs" role="tablist" aria-label="Board space">
+                  <button class="board-space-tab active" type="button" role="tab" aria-selected="true" data-board-space="real">Real Space</button>
+                  <button class="board-space-tab" type="button" role="tab" aria-selected="false" data-board-space="net">Net Space</button>
+                </div>
+                <div class="board-space-panel" id="real-space-panel">
+                  <div class="board-instructions"><span class="live-dot"></span><span>Drag empty space to pan; drag pieces onto the grid or tap “Add”. Scroll to zoom.</span><label class="board-scale-control" id="board-preset-control" for="board-preset" hidden><span>BOARD SIZE / SCALE</span><select class="input-control" id="board-preset" aria-label="Board size and scale"></select></label><label class="board-zoom-control" for="board-zoom">ZOOM <input id="board-zoom" type="range" min="12" max="48" step="2" value="32"><output id="board-zoom-value" for="board-zoom">32 px</output></label><button class="icon-button" type="button" data-action="remove-board-piece" aria-label="Remove selected board piece" title="Remove selected piece">×</button></div>
+                  <div class="board-scroll" id="board-scroll">
+                    <div class="board-canvas" id="board-canvas">
+                      <div class="ruler-corner" aria-hidden="true">m</div>
+                      <div class="board-ruler-top" id="board-ruler-top" aria-label="Horizontal ruler in meters"></div>
+                      <div class="board-ruler-left" id="board-ruler-left" aria-label="Vertical ruler in meters"></div>
+                      <div class="board-grid" id="board-grid" role="grid" aria-label="Tactical grid, each square represents two meters"></div>
+                      <div class="board-ruler-right" id="board-ruler-right" aria-label="Right-side ruler in meters"></div>
+                      <div class="board-ruler-bottom" id="board-ruler-bottom" aria-label="Bottom ruler in meters"></div>
+                      <div class="ruler-corner ruler-bottom-corner" aria-hidden="true">m</div>
+                    </div>
                   </div>
+                </div>
+                <div class="board-space-panel net-space-board-panel" id="net-space-board-panel" hidden>
+                  <div class="board-instructions"><span class="live-dot"></span><span>Net Space planning grid · 10 × 10 cells. Scroll to zoom.</span><label class="board-zoom-control" for="net-board-zoom">ZOOM <input id="net-board-zoom" type="range" min="12" max="48" step="2" value="32"><output id="net-board-zoom-value" for="net-board-zoom">32 px</output></label></div>
+                  <div class="net-grid-scroll" id="net-grid-scroll"><div class="net-grid" id="net-grid" role="grid" aria-label="Net Space grid, 10 columns by 10 rows"></div></div>
+                  <p class="net-grid-selection" id="net-grid-selection" aria-live="polite">Selected cell: A1</p>
+                </div>
+                <div class="board-context-menu" id="board-context-menu" role="menu" hidden>
+                  <button type="button" role="menuitem" data-action="remove-context-piece">Remove from board</button>
                 </div>
               </div>
               <aside class="board-sidebar" aria-label="Initiative, dice, health, and campaign activity">
